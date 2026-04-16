@@ -8,11 +8,17 @@
 LyricLine lyrics[MAX_LYRIC_LINES];
 int       lyricCount = 0;
 
+long wordStartMs[MAX_WORD_ENTRIES];
+int  wordTimestampCount = 0;
+
 void lyrics_clear() {
-    lyricCount = 0;
+    lyricCount          = 0;
+    wordTimestampCount  = 0;
     for (int i = 0; i < MAX_LYRIC_LINES; i++) {
         lyrics[i].timestampMs = 0;
-        lyrics[i].text = "";
+        lyrics[i].text        = "";
+        lyrics[i].wordOffset  = -1;
+        lyrics[i].wordCount   = 0;
     }
 }
 

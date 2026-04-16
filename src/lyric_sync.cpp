@@ -1,5 +1,6 @@
 #include "lyric_sync.h"
 #include "get_lyrics.h"
+#include <Arduino.h>
 
 int sync_getCurrentLine(long progressMs) {
     if (lyricCount == 0) return -1;
@@ -29,7 +30,7 @@ void sync_getDisplayLines(long progressMs, int* lineIndices, int maxLines) {
     }
 
     int current = sync_getCurrentLine(progressMs);
-    
+
     for (int i = 0; i < maxLines; i++) {
         int lineIdx = current + i;
         if (lineIdx < lyricCount) {
@@ -38,4 +39,22 @@ void sync_getDisplayLines(long progressMs, int* lineIndices, int maxLines) {
             lineIndices[i] = -1;
         }
     }
+}
+
+int sync_getCurrentWord(long progressMs, int lineIdx) {
+    if (lineIdx < 0 || lineIdx >= lyricCount) return -1;
+    if (lyrics[lineIdx].wordOffset < 0)        return -1;
+
+    int offset = lyrics[lineIdx].wordOffset;
+    int count  = lyrics[lineIdx].wordCount;
+    int current = 0;
+
+    for (int i = 0; i < count; i++) {
+        if (wordStartMs[offset + i] <= progressMs) {
+            current = i;
+        } else {
+            break;
+        }
+    }
+    return current;
 }

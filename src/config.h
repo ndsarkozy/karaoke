@@ -10,9 +10,9 @@
 #define REFRESH_TOKEN    "AQA9Rck8UV1Wy2OyZo1xN14elwXrLwYOsxAkvoyHENaMJvvhpvly14iVlGwcj4ttKqTEdA44zi6QnzxWiIi81wFxo3j0q8hu9MhIW1FIDbAmHYRbEMlYgjgBtc4AXwBzViI"
 
 // Display (GC9A01)
-#define TFT_CS           15
-#define TFT_DC           2
-#define TFT_RST          4
+#define TFT_CS            5
+#define TFT_DC           21
+#define TFT_RST          22
 #define TFT_BL           32
 
 // DAC

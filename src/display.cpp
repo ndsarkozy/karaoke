@@ -98,51 +98,120 @@ void display_showLyric(const String &current, const String &next) {
     tft.drawString(next.substring(0, 30), SCREEN_CENTER_X, 200);
 }
 
-void display_showLyrics(const String &currentLine, const String &nextLine, int highlightWord) {
-    tft.fillRect(0, 85, 240, 95, COLOR_BLACK);
+// Returns the char index of the best space to split on, -1 if fits on one line
+static int findSplitChar(const String &text, int font, int maxW) {
+    tft.setTextFont(font);
+    if (tft.textWidth(text) <= maxW) return -1;
 
-    if (currentLine.length() == 0) return;
+    int best   = -1;
+    int bestMax = 99999;
 
-    // Pick font 2 if the full line fits within 210px, else font 1
-    tft.setTextFont(2);
-    int font = (tft.textWidth(currentLine) <= 210) ? 2 : 1;
+    for (int i = 1; i < (int)text.length(); i++) {
+        if (text[i] != ' ') continue;
+        String left  = text.substring(0, i);
+        String right = text.substring(i + 1);
+        int lw = tft.textWidth(left);
+        int rw = tft.textWidth(right);
+        if (lw <= maxW && rw <= maxW) {
+            int mx = max(lw, rw);
+            if (mx < bestMax) { bestMax = mx; best = i; }
+        }
+    }
+    return best;
+}
+
+// Draw a segment of text word-by-word with karaoke coloring:
+//   past words = gray, current = yellow, future = white
+// wOffset = how many words precede this segment in the full line
+static void renderWords(const String &seg, int y, int font,
+                        int highlightWord, int wOffset) {
     tft.setTextFont(font);
     tft.setTextDatum(TL_DATUM);
 
-    // Center the whole line horizontally
-    int totalW = tft.textWidth(currentLine);
+    int totalW = tft.textWidth(seg);
     int x = SCREEN_CENTER_X - totalW / 2;
-    int y = 118;
+    if (x < 3) x = 3;
 
-    // Draw word by word, highlighting the active word in yellow
-    int wordIdx = 0;
-    int start   = 0;
-    int len     = (int)currentLine.length();
+    int wIdx  = wOffset;
+    int start = 0;
+    int len   = (int)seg.length();
 
     for (int i = 0; i <= len; i++) {
-        if (i == len || currentLine[i] == ' ') {
+        if (i == len || seg[i] == ' ') {
             if (i > start) {
-                String word = currentLine.substring(start, i);
-                tft.setTextColor(wordIdx == highlightWord ? COLOR_YELLOW : COLOR_WHITE,
-                                 COLOR_BLACK);
-                tft.drawString(word, x, y);
-                x += tft.textWidth(word);
+                String w = seg.substring(start, i);
+                uint16_t col;
+                if      (wIdx < highlightWord)  col = 0x7BEF;       // past: gray
+                else if (wIdx == highlightWord) col = COLOR_YELLOW;  // current: yellow
+                else                            col = COLOR_WHITE;   // future: white
+                tft.setTextColor(col, COLOR_BLACK);
+                tft.drawString(w, x, y);
+                x += tft.textWidth(w);
             }
             if (i < len) {
                 tft.setTextColor(COLOR_WHITE, COLOR_BLACK);
                 tft.drawString(" ", x, y);
                 x += tft.textWidth(" ");
-                wordIdx++;
+                wIdx++;
             }
             start = i + 1;
         }
     }
+}
 
-    // Next line: smaller, gray, centered
+void display_showLyrics(const String &currentLine, const String &nextLine, int highlightWord) {
+    static String lastLine = "";
+    bool lineChanged = (currentLine != lastLine);
+
+    if (lineChanged) {
+        // Clear lyric area and redraw accent separator only on line change
+        tft.fillRect(0, 88, 240, 90, COLOR_BLACK);
+        tft.drawFastHLine(50, 138, 140, 0x2104);  // subtle dim separator
+        lastLine = currentLine;
+    }
+
+    if (currentLine.length() == 0) return;
+
+    // Choose font + split strategy:
+    //   font2 1-line → font2 2-line → font1 1-line → font1 2-line
+    int font    = 2;
+    int splitAt = -1;
+
+    tft.setTextFont(2);
+    if (tft.textWidth(currentLine) > 200) {
+        splitAt = findSplitChar(currentLine, 2, 200);
+        if (splitAt < 0) {
+            font    = 1;
+            splitAt = findSplitChar(currentLine, 1, 225);
+        }
+    }
+
+    if (splitAt < 0) {
+        // Single line — vertically centered near display center
+        renderWords(currentLine, 112, font, highlightWord, 0);
+    } else {
+        // Two lines — count word offset for second segment
+        String part1 = currentLine.substring(0, splitAt);
+        String part2 = currentLine.substring(splitAt + 1);
+
+        int wOffset = 0;
+        for (char c : part1) if (c == ' ') wOffset++;
+        wOffset++;  // part2 begins at the next word
+
+        int y1 = (font == 2) ? 97 : 102;
+        int y2 = (font == 2) ? 117 : 114;
+        renderWords(part1, y1, font, highlightWord, 0);
+        renderWords(part2, y2, font, highlightWord, wOffset);
+    }
+
+    // Next line: very dim, font 1, drawn in-place (no clear needed)
+    tft.setTextFont(1);
+    tft.setTextDatum(MC_DATUM);
     if (nextLine.length() > 0) {
-        tft.setTextFont(1);
-        tft.setTextColor(COLOR_GRAY, COLOR_BLACK);
-        tft.setTextDatum(MC_DATUM);
-        tft.drawString(nextLine, SCREEN_CENTER_X, 155);
+        tft.setTextColor(0x4208, COLOR_BLACK);
+        tft.drawString(nextLine.substring(0, 38), SCREEN_CENTER_X, 152);
+    } else {
+        tft.setTextColor(COLOR_BLACK, COLOR_BLACK);
+        tft.drawString("                                      ", SCREEN_CENTER_X, 152);
     }
 }

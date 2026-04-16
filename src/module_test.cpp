@@ -230,14 +230,18 @@ void FullSystem_Test(void) {
 
         // Retry lyrics if not loaded yet
         if (!lyricsLoaded) {
-            Serial.println("[SYSTEM] Fetching lyrics...");
-            bool ok = lyrics_fetch(track.title, track.artist);
+            Serial.println("[SYSTEM] Fetching lyrics (Spotify)...");
+            bool ok = spotify_getLyrics(track.trackId);
+            if (!ok) {
+                Serial.println("[SYSTEM] Spotify lyrics unavailable, trying LRCLib...");
+                ok = lyrics_fetch(track.title, track.artist);
+            }
             if (ok) {
                 lyricsLoaded = true;
-                Serial.println("[SYSTEM] Lyrics loaded: " 
-                               + String(lyricCount) + " lines");
+                Serial.println("[SYSTEM] Lyrics loaded: " + String(lyricCount)
+                               + " lines, " + String(wordTimestampCount) + " word timestamps");
             } else {
-                Serial.println("[SYSTEM] Lyrics fetch failed, will retry");
+                Serial.println("[SYSTEM] No lyrics found, will retry");
             }
         }
     }
@@ -255,19 +259,20 @@ void FullSystem_Test(void) {
         int currentLine = lineIndices[0];
 
         if (currentLine >= 0) {
-            // Estimate which word is being sung within this line
-            long lineStart = lyrics[currentLine].timestampMs;
-            long lineEnd   = (currentLine + 1 < lyricCount)
-                             ? lyrics[currentLine + 1].timestampMs
-                             : lineStart + 4000;
-            long elapsed  = estimatedMs - lineStart;
-            long duration = max(lineEnd - lineStart, 1L);
-
-            int wc = 1;
-            for (int ci = 0; ci < (int)lyrics[currentLine].text.length(); ci++)
-                if (lyrics[currentLine].text[ci] == ' ') wc++;
-
-            int highlightWord = constrain((int)((float)elapsed / duration * wc), 0, wc - 1);
+            // Use exact word timestamps if available, otherwise estimate
+            int highlightWord = sync_getCurrentWord(estimatedMs, currentLine);
+            if (highlightWord < 0) {
+                long lineStart = lyrics[currentLine].timestampMs;
+                long lineEnd   = (currentLine + 1 < lyricCount)
+                                 ? lyrics[currentLine + 1].timestampMs
+                                 : lineStart + 4000;
+                long elapsed  = estimatedMs - lineStart;
+                long duration = max(lineEnd - lineStart, 1L);
+                int wc = 1;
+                for (int ci = 0; ci < (int)lyrics[currentLine].text.length(); ci++)
+                    if (lyrics[currentLine].text[ci] == ' ') wc++;
+                highlightWord = constrain((int)((float)elapsed / duration * wc), 0, wc - 1);
+            }
 
             bool lineChanged = (currentLine != lastLine);
             bool wordChanged = (highlightWord != lastHighlightWord);
