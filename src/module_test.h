@@ -3,7 +3,7 @@
 // Comment out to disable, uncomment to enable
 // ─────────────────────────────────────────────
 #define WIFI_TEST
-//#define DISPLAY_TEST
+#define DISPLAY_TEST
 //#define DAC_TEST
 //#define RTC_TEST
 //#define SPOTIFY_TEST

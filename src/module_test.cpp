@@ -3,8 +3,11 @@
 #include "net.h"
 #include <Arduino.h>
 
+#ifdef DISPLAY_TEST
+#include "display.h"
+#endif
+
 // ── INIT ───────────────────────────────────────────────
-// Initialize only what the active tests need
 void Module_Test_Init(void) {
 
     #ifdef WIFI_TEST
@@ -12,20 +15,11 @@ void Module_Test_Init(void) {
     #endif
 
     #ifdef DISPLAY_TEST
-    // display_init();
-    #endif
-
-    #ifdef DAC_TEST
-    // dac_init();
-    #endif
-
-    #ifdef RTC_TEST
-    // rtc_init();
+    display_init();
     #endif
 
     #ifdef SPOTIFY_TEST
     wifi_connect();
-    // spotify_init();
     #endif
 
     #ifdef LRCLIB_TEST
@@ -34,10 +28,7 @@ void Module_Test_Init(void) {
 
     #ifdef FULL_SYSTEM_TEST
     wifi_connect();
-    // display_init();
-    // dac_init();
-    // rtc_init();
-    // spotify_init();
+    display_init();
     #endif
 }
 
@@ -93,12 +84,14 @@ void WiFi_Test(void) {
 #ifdef DISPLAY_TEST
 void Display_Test(void) {
     Serial.println("[TEST] Display ───────────────");
-    // draw a test pattern on GC9A01
-    // display_fill(COLOR_RED);
-    // delay(500);
-    // display_fill(COLOR_GREEN);
-    // delay(500);
-    // display_fill(COLOR_BLUE);
+    display_fill(COLOR_RED);
+    delay(500);
+    display_fill(COLOR_GREEN);
+    delay(500);
+    display_fill(COLOR_BLUE);
+    delay(500);
+    display_clear();
+    display_showMessage("KARAOKE", "ESP32", COLOR_WHITE);
     Serial.println("[TEST] Display PASS - check screen");
 }
 #endif
@@ -106,7 +99,6 @@ void Display_Test(void) {
 #ifdef DAC_TEST
 void DAC_Test(void) {
     Serial.println("[TEST] DAC ───────────────────");
-    // dac_tone(440, 500);   // 440Hz for 500ms
     Serial.println("[TEST] DAC PASS - check speaker");
 }
 #endif
@@ -114,8 +106,6 @@ void DAC_Test(void) {
 #ifdef RTC_TEST
 void RTC_Test(void) {
     Serial.println("[TEST] RTC ───────────────────");
-    // DateTime now = rtc_getTime();
-    // Serial.println("[RTC] Time: " + rtc_timeString(now));
     Serial.println("[TEST] RTC PASS");
 }
 #endif
@@ -123,24 +113,18 @@ void RTC_Test(void) {
 #ifdef SPOTIFY_TEST
 void Spotify_Test(void) {
     Serial.println("[TEST] Spotify ───────────────");
-    // bool ok = spotify_refreshToken();
-    // Serial.println(ok ? "[TEST] Spotify PASS" : "[TEST] Spotify FAIL");
 }
 #endif
 
 #ifdef LRCLIB_TEST
 void LRCLib_Test(void) {
     Serial.println("[TEST] LRCLib ────────────────");
-    // bool ok = lrclib_fetch("Blinding Lights", "The Weeknd");
-    // Serial.println(ok ? "[TEST] LRCLib PASS" : "[TEST] LRCLib FAIL");
 }
 #endif
 
 #ifdef LYRIC_SYNC_TEST
 void LyricSync_Test(void) {
     Serial.println("[TEST] LyricSync ─────────────");
-    // int line = sync_getLine(47000);
-    // Serial.println("[SYNC] Line at 47s: " + String(line));
     Serial.println("[TEST] LyricSync PASS");
 }
 #endif
@@ -148,13 +132,6 @@ void LyricSync_Test(void) {
 #ifdef FULL_SYSTEM_TEST
 void FullSystem_Test(void) {
     Serial.println("[TEST] Full System ───────────");
-    // runs everything together
-    // spotify_refreshToken();
-    // SpotifyTrack t;
-    // spotify_getNowPlaying(t);
-    // lrclib_fetch(t.title, t.artist);
-    // int line = sync_getLine(t.progressMs);
-    // display_showLyric(lyrics[line].text);
     Serial.println("[TEST] Full System PASS");
 }
 #endif
