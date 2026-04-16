@@ -1,18 +1,22 @@
 #include <Arduino.h>
+#include "config.h"
+#include "module_test.h"
 
-// put function declarations here:
-int myFunction(int, int);
+#define RUN_TESTS
 
 void setup() {
-  // put your setup code here, to run once:
-  int result = myFunction(2, 3);
+    Serial.begin(115200);
+    delay(500);
+    Serial.println("=== Karaoke ESP32 Boot ===");
+
+    #ifdef RUN_TESTS
+    Module_Test_Init();
+    #endif
 }
 
 void loop() {
-  // put your main code here, to run repeatedly:
-}
-
-// put function definitions here:
-int myFunction(int x, int y) {
-  return x + y;
+    #ifdef RUN_TESTS
+    Module_Test_Run();
+    delay(5000);
+    #endif
 }
