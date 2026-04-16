@@ -28,12 +28,10 @@ void display_fillCircle(int x, int y, int r, uint16_t color);
 void display_brightness(uint8_t value);
 
 // Higher level helpers
-void display_showMessage(const String &line1,
-                         const String &line2,
-                         uint16_t color);
-void display_showTrack(const String &title,
-                       const String &artist);
-void display_showLyric(const String &current,
-                       const String &next);
+void display_showMessage(const String &line1, const String &line2, uint16_t color);
+void display_showTrack(const String &title, const String &artist);
+void display_showTrackText(const String &title, const String &artist);
+void display_showLyric(const String &current, const String &next);
+bool display_drawJpeg(const uint8_t* buf, size_t len, int x, int y);
 // 2-row karaoke display: current line with per-word highlight, next line dimmed
 void display_showLyrics(const String &currentLine, const String &nextLine, int highlightWord = 0);

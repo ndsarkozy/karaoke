@@ -21,6 +21,7 @@ bool spotify_refreshToken() {
     client.setInsecure();
 
     http.begin(client, "https://accounts.spotify.com/api/token");
+    http.setTimeout(6000);
     http.addHeader("Content-Type", "application/x-www-form-urlencoded");
 
     String creds = String(CLIENT_ID) + ":" + String(CLIENT_SECRET);
@@ -61,6 +62,7 @@ bool spotify_getNowPlaying(SpotifyTrack &track) {
     client.setInsecure();
 
     http.begin(client, "https://api.spotify.com/v1/me/player/currently-playing");
+    http.setTimeout(5000);
     http.addHeader("Authorization", "Bearer " + accessToken);
 
     int code = http.GET();
@@ -86,12 +88,13 @@ bool spotify_getNowPlaying(SpotifyTrack &track) {
         return false;
     }
 
-    track.title      = doc["item"]["name"].as<String>();
-    track.artist     = doc["item"]["artists"][0]["name"].as<String>();
-    track.trackId    = doc["item"]["id"].as<String>();
-    track.progressMs = doc["progress_ms"].as<long>();
-    track.durationMs = doc["item"]["duration_ms"].as<long>();
-    track.isPlaying  = doc["is_playing"].as<bool>();
+    track.title       = doc["item"]["name"].as<String>();
+    track.artist      = doc["item"]["artists"][0]["name"].as<String>();
+    track.trackId     = doc["item"]["id"].as<String>();
+    track.albumArtUrl = doc["item"]["album"]["images"][1]["url"].as<String>(); // 300x300
+    track.progressMs  = doc["progress_ms"].as<long>();
+    track.durationMs  = doc["item"]["duration_ms"].as<long>();
+    track.isPlaying   = doc["is_playing"].as<bool>();
 
     Serial.println("[Spotify] Track: " + track.title);
     Serial.println("[Spotify] Artist: " + track.artist);

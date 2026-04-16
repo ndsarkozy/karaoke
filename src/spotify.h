@@ -5,6 +5,7 @@ struct SpotifyTrack {
     String title;
     String artist;
     String trackId;
+    String albumArtUrl;  // 300x300 JPEG
     long   progressMs;
     long   durationMs;
     bool   isPlaying;

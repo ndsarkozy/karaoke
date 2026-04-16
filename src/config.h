@@ -19,5 +19,5 @@
 #define DAC_PIN          25
 
 // Polling intervals (ms)
-#define POLL_INTERVAL    3000
+#define POLL_INTERVAL    1000
 #define TOKEN_INTERVAL   3300000
