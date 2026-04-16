@@ -98,30 +98,51 @@ void display_showLyric(const String &current, const String &next) {
     tft.drawString(next.substring(0, 30), SCREEN_CENTER_X, 200);
 }
 
-void display_showLyrics(const String lyricLines[], int lineCount) {
-    // Clear the lyric display area
-    tft.fillRect(0, 80, 240, 160, COLOR_BLACK);
+void display_showLyrics(const String &currentLine, const String &nextLine, int highlightWord) {
+    tft.fillRect(0, 85, 240, 95, COLOR_BLACK);
 
-    tft.setTextDatum(MC_DATUM);
+    if (currentLine.length() == 0) return;
 
-    // Display lines with proper styling
-    // Line 0 (current): bright white, larger
-    // Lines 1-3 (upcoming): gray, progressively smaller
-    
-    int yPositions[] = {110, 150, 180, 210};
-    uint16_t colors[] = {COLOR_WHITE, COLOR_GRAY, COLOR_GRAY, COLOR_GRAY};
-    uint8_t sizes[] = {2, 1, 1, 1};
+    // Pick font 2 if the full line fits within 210px, else font 1
+    tft.setTextFont(2);
+    int font = (tft.textWidth(currentLine) <= 210) ? 2 : 1;
+    tft.setTextFont(font);
+    tft.setTextDatum(TL_DATUM);
 
-    for (int i = 0; i < lineCount && i < 4; i++) {
-        if (lyricLines[i].length() == 0) continue;
+    // Center the whole line horizontally
+    int totalW = tft.textWidth(currentLine);
+    int x = SCREEN_CENTER_X - totalW / 2;
+    int y = 118;
 
-        tft.setTextColor(colors[i], COLOR_BLACK);
-        tft.setTextSize(sizes[i]);
+    // Draw word by word, highlighting the active word in yellow
+    int wordIdx = 0;
+    int start   = 0;
+    int len     = (int)currentLine.length();
 
-        // Truncate long lines for smaller text sizes
-        int maxLen = (i == 0) ? 20 : 30;
-        String displayText = lyricLines[i].substring(0, maxLen);
+    for (int i = 0; i <= len; i++) {
+        if (i == len || currentLine[i] == ' ') {
+            if (i > start) {
+                String word = currentLine.substring(start, i);
+                tft.setTextColor(wordIdx == highlightWord ? COLOR_YELLOW : COLOR_WHITE,
+                                 COLOR_BLACK);
+                tft.drawString(word, x, y);
+                x += tft.textWidth(word);
+            }
+            if (i < len) {
+                tft.setTextColor(COLOR_WHITE, COLOR_BLACK);
+                tft.drawString(" ", x, y);
+                x += tft.textWidth(" ");
+                wordIdx++;
+            }
+            start = i + 1;
+        }
+    }
 
-        tft.drawString(displayText, SCREEN_CENTER_X, yPositions[i]);
+    // Next line: smaller, gray, centered
+    if (nextLine.length() > 0) {
+        tft.setTextFont(1);
+        tft.setTextColor(COLOR_GRAY, COLOR_BLACK);
+        tft.setTextDatum(MC_DATUM);
+        tft.drawString(nextLine, SCREEN_CENTER_X, 155);
     }
 }

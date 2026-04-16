@@ -17,6 +17,5 @@ void setup() {
 void loop() {
     #ifdef RUN_TESTS
     Module_Test_Run();
-    delay(5000);
     #endif
 }

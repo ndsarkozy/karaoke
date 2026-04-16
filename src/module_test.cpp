@@ -205,6 +205,7 @@ void FullSystem_Test(void) {
     if (now - lastSpotifyPoll > POLL_INTERVAL) {
         lastSpotifyPoll = now;
 
+        unsigned long preRequest = millis();
         SpotifyTrack track;
         if (!spotify_getNowPlaying(track)) {
             Serial.println("[SYSTEM] Nothing playing");
@@ -212,8 +213,9 @@ void FullSystem_Test(void) {
             return;
         }
 
-        // Store anchor for interpolation
-        spotifyProgressAtPoll = track.progressMs;
+        // Anchor with HTTP latency compensation
+        unsigned long requestMs = millis() - preRequest;
+        spotifyProgressAtPoll = track.progressMs + (long)requestMs;
         localMillisAtPoll = millis();
 
         // New track detected
@@ -248,31 +250,39 @@ void FullSystem_Test(void) {
         int lineIndices[MAX_DISPLAY_LINES];
         sync_getDisplayLines(estimatedMs, lineIndices, MAX_DISPLAY_LINES);
 
-        static int lastLine = -1;
+        static int lastLine          = -1;
+        static int lastHighlightWord = -1;
         int currentLine = lineIndices[0];
 
-        // Only print and update display when line changes
-        if (currentLine != lastLine && currentLine >= 0) {
-            lastLine = currentLine;
-            String current = lyrics[currentLine].text;
+        if (currentLine >= 0) {
+            // Estimate which word is being sung within this line
+            long lineStart = lyrics[currentLine].timestampMs;
+            long lineEnd   = (currentLine + 1 < lyricCount)
+                             ? lyrics[currentLine + 1].timestampMs
+                             : lineStart + 4000;
+            long elapsed  = estimatedMs - lineStart;
+            long duration = max(lineEnd - lineStart, 1L);
 
-            Serial.println("[LYRIC] " + String(estimatedMs / 1000)
-                           + "s | " + current);
+            int wc = 1;
+            for (int ci = 0; ci < (int)lyrics[currentLine].text.length(); ci++)
+                if (lyrics[currentLine].text[ci] == ' ') wc++;
 
-            // Build display lines array
-            String displayLines[MAX_DISPLAY_LINES];
-            int validLines = 0;
-            for (int i = 0; i < MAX_DISPLAY_LINES; i++) {
-                if (lineIndices[i] >= 0) {
-                    displayLines[i] = lyrics[lineIndices[i]].text;
-                    validLines++;
-                } else {
-                    displayLines[i] = "";
-                }
+            int highlightWord = constrain((int)((float)elapsed / duration * wc), 0, wc - 1);
+
+            bool lineChanged = (currentLine != lastLine);
+            bool wordChanged = (highlightWord != lastHighlightWord);
+
+            if (lineChanged) {
+                lastLine = currentLine;
+                Serial.println("[LYRIC] " + String(estimatedMs / 1000)
+                               + "s | " + lyrics[currentLine].text);
             }
 
-            // Display multiple upcoming lines in karaoke style
-            display_showLyrics(displayLines, MAX_DISPLAY_LINES);
+            if (lineChanged || wordChanged) {
+                lastHighlightWord = highlightWord;
+                String nextText = (lineIndices[1] >= 0) ? lyrics[lineIndices[1]].text : "";
+                display_showLyrics(lyrics[currentLine].text, nextText, highlightWord);
+            }
         }
     }
 

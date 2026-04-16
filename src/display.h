@@ -35,5 +35,5 @@ void display_showTrack(const String &title,
                        const String &artist);
 void display_showLyric(const String &current,
                        const String &next);
-// Display multiple lyric lines (karaoke-style)
-void display_showLyrics(const String lyricLines[], int lineCount);
+// 2-row karaoke display: current line with per-word highlight, next line dimmed
+void display_showLyrics(const String &currentLine, const String &nextLine, int highlightWord = 0);
