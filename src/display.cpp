@@ -7,7 +7,14 @@
 static TFT_eSPI tft = TFT_eSPI();
 
 static bool jpegOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap) {
-    tft.pushImage(x, y, w, h, bitmap);
+    // Clip to display bounds (handles negative offsets for center-crop)
+    int16_t x1 = max(x, (int16_t)0);
+    int16_t y1 = max(y, (int16_t)0);
+    int16_t x2 = min((int16_t)(x + w), (int16_t)240);
+    int16_t y2 = min((int16_t)(y + h), (int16_t)240);
+    if (x1 >= x2 || y1 >= y2) return true;
+    uint16_t* bm = bitmap + (y1 - y) * w + (x1 - x);
+    tft.pushImage(x1, y1, x2 - x1, y2 - y1, bm);
     return true;
 }
 
@@ -19,8 +26,8 @@ void display_init() {
     tft.setRotation(0);
     tft.fillScreen(COLOR_BLACK);
 
-    TJpgDec.setJpgScale(2);       // 300x300 → 150x150
-    TJpgDec.setSwapBytes(true);   // required for ESP32
+    TJpgDec.setJpgScale(1);        // full resolution — we center-crop in the callback
+    TJpgDec.setSwapBytes(true);    // required for ESP32
     TJpgDec.setCallback(jpegOutput);
 
     Serial.println("[Display] Initialized");
@@ -66,42 +73,30 @@ void display_showMessage(const String &line1,
 
 void display_showTrack(const String &title, const String &artist) {
     display_clear();
-
-    // Gray circle placeholder — album art draws over this once downloaded
-    tft.fillCircle(SCREEN_CENTER_X, 82, 72, 0x2104);
-    tft.drawCircle(SCREEN_CENTER_X, 82, 73, COLOR_GREEN);
-    tft.drawCircle(SCREEN_CENTER_X, 82, 74, 0x0320);  // subtle outer glow
-
-    // Music note in placeholder center
-    tft.setTextFont(4);
-    tft.setTextColor(0x4208, 0x2104);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString("?", SCREEN_CENTER_X, 82);
-
-    // Title — truncate to fit font 2
-    tft.setTextFont(2);
-    tft.setTextColor(COLOR_WHITE, COLOR_BLACK);
-    tft.setTextDatum(MC_DATUM);
-    String t = title;
-    while (t.length() > 1 && tft.textWidth(t) > 210) t.remove(t.length() - 1);
-    tft.drawString(t, SCREEN_CENTER_X, 172);
-
-    // Artist
-    tft.setTextFont(1);
-    tft.setTextColor(COLOR_GREEN, COLOR_BLACK);
-    tft.drawString(artist.substring(0, 30), SCREEN_CENTER_X, 192);
+    // Dark placeholder fills the circle while art loads
+    tft.fillCircle(SCREEN_CENTER_X, SCREEN_CENTER_Y, 119, 0x1082);
+    display_showTrackText(title, artist);
 }
 
 void display_showTrackText(const String &title, const String &artist) {
-    tft.setTextFont(2);
-    tft.setTextColor(COLOR_WHITE, COLOR_BLACK);
+    // Step-gradient dark bar over lower portion of the circle
+    tft.fillRect(0, 148, 240, 18, 0x2104);
+    tft.fillRect(0, 166, 240, 14, 0x1082);
+    tft.fillRect(0, 180, 240, 60, 0x0000);
+
     tft.setTextDatum(MC_DATUM);
+
+    // Title — white, font 2
+    tft.setTextFont(2);
     String t = title;
     while (t.length() > 1 && tft.textWidth(t) > 210) t.remove(t.length() - 1);
-    tft.drawString(t, SCREEN_CENTER_X, 172);
+    tft.setTextColor(COLOR_WHITE, 0x0000);
+    tft.drawString(t, SCREEN_CENTER_X, 185);
+
+    // Artist — green, font 1
     tft.setTextFont(1);
-    tft.setTextColor(COLOR_GREEN, COLOR_BLACK);
-    tft.drawString(artist.substring(0, 30), SCREEN_CENTER_X, 192);
+    tft.setTextColor(COLOR_GREEN, 0x0000);
+    tft.drawString(artist.substring(0, 32), SCREEN_CENTER_X, 204);
 }
 
 bool display_drawJpeg(const uint8_t* buf, size_t len, int x, int y) {

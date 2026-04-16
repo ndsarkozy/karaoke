@@ -226,7 +226,7 @@ void loop() {
 
     // Album art arrived: overlay on track card
     if (hasArt && artBuf && showingTrack) {
-        display_drawJpeg(artBuf, artSz, 45, 7);
+        display_drawJpeg(artBuf, artSz, -30, -30);  // center-crop 300x300 → 240x240
         free(artBuf);
         display_showTrackText(title, artist);
     } else if (hasArt && artBuf) {
