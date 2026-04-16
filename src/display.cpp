@@ -74,19 +74,54 @@ void display_showTrack(const String &title,
     tft.drawString(artist.substring(0, 20), SCREEN_CENTER_X, 130);
 }
 
-void display_showLyric(const String &current,
-                       const String &next) {
-    // Clear lyric area only
-    tft.fillRect(10, 140, 220, 80, COLOR_BLACK);
+void display_showLyric(const String &current, const String &next) {
+    tft.fillRect(0, 130, 240, 110, COLOR_BLACK);
 
-    // Current lyric in white
+    tft.setTextDatum(MC_DATUM);
+
+    // Current lyric in white, size 2
     tft.setTextColor(COLOR_WHITE, COLOR_BLACK);
     tft.setTextSize(2);
-    tft.setTextDatum(MC_DATUM);
-    tft.drawString(current.substring(0, 15), SCREEN_CENTER_X, 160);
+    if (current.length() <= 12) {
+        tft.drawString(current, SCREEN_CENTER_X, 160);
+    } else {
+        // Split into two lines at nearest space
+        int split = current.lastIndexOf(' ', 12);
+        if (split < 0) split = 12;
+        tft.drawString(current.substring(0, split), SCREEN_CENTER_X, 148);
+        tft.drawString(current.substring(split + 1), SCREEN_CENTER_X, 170);
+    }
 
-    // Next lyric in gray
+    // Next lyric in gray, size 1
     tft.setTextColor(COLOR_GRAY, COLOR_BLACK);
     tft.setTextSize(1);
-    tft.drawString(next.substring(0, 20), SCREEN_CENTER_X, 190);
+    tft.drawString(next.substring(0, 30), SCREEN_CENTER_X, 200);
+}
+
+void display_showLyrics(const String lyricLines[], int lineCount) {
+    // Clear the lyric display area
+    tft.fillRect(0, 80, 240, 160, COLOR_BLACK);
+
+    tft.setTextDatum(MC_DATUM);
+
+    // Display lines with proper styling
+    // Line 0 (current): bright white, larger
+    // Lines 1-3 (upcoming): gray, progressively smaller
+    
+    int yPositions[] = {110, 150, 180, 210};
+    uint16_t colors[] = {COLOR_WHITE, COLOR_GRAY, COLOR_GRAY, COLOR_GRAY};
+    uint8_t sizes[] = {2, 1, 1, 1};
+
+    for (int i = 0; i < lineCount && i < 4; i++) {
+        if (lyricLines[i].length() == 0) continue;
+
+        tft.setTextColor(colors[i], COLOR_BLACK);
+        tft.setTextSize(sizes[i]);
+
+        // Truncate long lines for smaller text sizes
+        int maxLen = (i == 0) ? 20 : 30;
+        String displayText = lyricLines[i].substring(0, maxLen);
+
+        tft.drawString(displayText, SCREEN_CENTER_X, yPositions[i]);
+    }
 }

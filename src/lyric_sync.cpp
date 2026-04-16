@@ -21,3 +21,21 @@ int sync_getNextLine(long progressMs) {
     if (current + 1 < lyricCount) return current + 1;
     return current;
 }
+
+void sync_getDisplayLines(long progressMs, int* lineIndices, int maxLines) {
+    if (lyricCount == 0) {
+        lineIndices[0] = -1;
+        return;
+    }
+
+    int current = sync_getCurrentLine(progressMs);
+    
+    for (int i = 0; i < maxLines; i++) {
+        int lineIdx = current + i;
+        if (lineIdx < lyricCount) {
+            lineIndices[i] = lineIdx;
+        } else {
+            lineIndices[i] = -1;
+        }
+    }
+}

@@ -3,15 +3,9 @@
 #include "net.h"
 #include "get_lyrics.h"
 #include "lyric_sync.h"
-#include <Arduino.h>
-
-#ifdef DISPLAY_TEST
-#include "display.h"
-#endif
-
-#ifdef SPOTIFY_TEST
 #include "spotify.h"
-#endif
+#include "display.h"
+#include <Arduino.h>
 
 // ── INIT ───────────────────────────────────────────────
 void Module_Test_Init(void) {
@@ -42,6 +36,7 @@ void Module_Test_Init(void) {
     #ifdef FULL_SYSTEM_TEST
     wifi_connect();
     display_init();
+    spotify_refreshToken();
     #endif
 }
 
@@ -124,7 +119,6 @@ void RTC_Test(void) {
 #endif
 
 #ifdef SPOTIFY_TEST
-#include "spotify.h"
 void Spotify_Test(void) {
     Serial.println("[TEST] Spotify ───────────────");
     bool ok = spotify_refreshToken();
@@ -144,8 +138,6 @@ void Spotify_Test(void) {
 #endif
 
 #ifdef LRCLIB_TEST
-#include "get_lyrics.h"
-#include "spotify.h"
 void LRCLib_Test(void) {
     Serial.println("[TEST] LRCLib ────────────────");
     SpotifyTrack track;
@@ -166,31 +158,21 @@ void LRCLib_Test(void) {
 #endif
 
 #ifdef LYRIC_SYNC_TEST
-#include "lyric_sync.h"
-#include "get_lyrics.h"
-#include "spotify.h"
 void LyricSync_Test(void) {
     Serial.println("[TEST] LyricSync ─────────────");
-
-    // Need a track loaded first
     SpotifyTrack track;
     spotify_getNowPlaying(track);
     if (track.title == "") {
         Serial.println("[TEST] LyricSync SKIP - nothing playing");
         return;
     }
-
-    // Fetch lyrics for current track
     bool ok = lyrics_fetch(track.title, track.artist);
     if (!ok) {
         Serial.println("[TEST] LyricSync SKIP - no lyrics found");
         return;
     }
-
-    // Test sync at current playback position
     int line = sync_getCurrentLine(track.progressMs);
     int next = sync_getNextLine(track.progressMs);
-
     if (line >= 0) {
         Serial.println("[TEST] LyricSync PASS");
         Serial.println("[SYNC] Progress: " + String(track.progressMs / 1000) + "s");
@@ -203,8 +185,97 @@ void LyricSync_Test(void) {
 #endif
 
 #ifdef FULL_SYSTEM_TEST
+static String lastTrackId = "";
+static unsigned long lastSpotifyPoll = 0;
+static unsigned long lastTokenRefresh = 0;
+static unsigned long localMillisAtPoll = 0;
+static long spotifyProgressAtPoll = 0;
+static bool lyricsLoaded = false;
+
 void FullSystem_Test(void) {
-    Serial.println("[TEST] Full System ───────────");
-    Serial.println("[TEST] Full System PASS");
+    unsigned long now = millis();
+
+    // Refresh token every 55 minutes
+    if (now - lastTokenRefresh > TOKEN_INTERVAL) {
+        spotify_refreshToken();
+        lastTokenRefresh = now;
+    }
+
+    // Poll Spotify every 3 seconds
+    if (now - lastSpotifyPoll > POLL_INTERVAL) {
+        lastSpotifyPoll = now;
+
+        SpotifyTrack track;
+        if (!spotify_getNowPlaying(track)) {
+            Serial.println("[SYSTEM] Nothing playing");
+            lyricsLoaded = false;
+            return;
+        }
+
+        // Store anchor for interpolation
+        spotifyProgressAtPoll = track.progressMs;
+        localMillisAtPoll = millis();
+
+        // New track detected
+        if (track.trackId != lastTrackId) {
+            lastTrackId = track.trackId;
+            lyricsLoaded = false;
+            Serial.println("[SYSTEM] ──────────────────────────");
+            Serial.println("[SYSTEM] Now Playing: " + track.title);
+            Serial.println("[SYSTEM] Artist:      " + track.artist);
+            Serial.println("[SYSTEM] ──────────────────────────");
+        }
+
+        // Retry lyrics if not loaded yet
+        if (!lyricsLoaded) {
+            Serial.println("[SYSTEM] Fetching lyrics...");
+            bool ok = lyrics_fetch(track.title, track.artist);
+            if (ok) {
+                lyricsLoaded = true;
+                Serial.println("[SYSTEM] Lyrics loaded: " 
+                               + String(lyricCount) + " lines");
+            } else {
+                Serial.println("[SYSTEM] Lyrics fetch failed, will retry");
+            }
+        }
+    }
+
+    // Update every 100ms using interpolated position
+    if (lyricsLoaded && lyricCount > 0) {
+        long estimatedMs = spotifyProgressAtPoll
+                           + (long)(millis() - localMillisAtPoll);
+
+        int lineIndices[MAX_DISPLAY_LINES];
+        sync_getDisplayLines(estimatedMs, lineIndices, MAX_DISPLAY_LINES);
+
+        static int lastLine = -1;
+        int currentLine = lineIndices[0];
+
+        // Only print and update display when line changes
+        if (currentLine != lastLine && currentLine >= 0) {
+            lastLine = currentLine;
+            String current = lyrics[currentLine].text;
+
+            Serial.println("[LYRIC] " + String(estimatedMs / 1000)
+                           + "s | " + current);
+
+            // Build display lines array
+            String displayLines[MAX_DISPLAY_LINES];
+            int validLines = 0;
+            for (int i = 0; i < MAX_DISPLAY_LINES; i++) {
+                if (lineIndices[i] >= 0) {
+                    displayLines[i] = lyrics[lineIndices[i]].text;
+                    validLines++;
+                } else {
+                    displayLines[i] = "";
+                }
+            }
+
+            // Display multiple upcoming lines in karaoke style
+            display_showLyrics(displayLines, MAX_DISPLAY_LINES);
+        }
+    }
+
+    delay(100);
 }
 #endif
