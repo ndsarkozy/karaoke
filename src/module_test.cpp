@@ -1,6 +1,7 @@
 #include "module_test.h"
 #include "config.h"
 #include "net.h"
+#include "get_lyrics.h"
 #include <Arduino.h>
 
 #ifdef DISPLAY_TEST
@@ -29,6 +30,7 @@ void Module_Test_Init(void) {
 
     #ifdef LRCLIB_TEST
     wifi_connect();
+    spotify_refreshToken();
     #endif
 
     #ifdef FULL_SYSTEM_TEST
@@ -136,8 +138,24 @@ void Spotify_Test(void) {
 #endif
 
 #ifdef LRCLIB_TEST
+#include "get_lyrics.h"
+#include "spotify.h"
 void LRCLib_Test(void) {
     Serial.println("[TEST] LRCLib ────────────────");
+    SpotifyTrack track;
+    spotify_getNowPlaying(track);
+    if (track.title == "") {
+        Serial.println("[TEST] LRCLib SKIP - nothing playing");
+        return;
+    }
+    bool ok = lyrics_fetch(track.title, track.artist);
+    if (ok) {
+        Serial.println("[TEST] LRCLib PASS");
+        Serial.println("[TEST] First line: " + lyrics[0].text);
+        Serial.println("[TEST] Total lines: " + String(lyricCount));
+    } else {
+        Serial.println("[TEST] LRCLib FAIL");
+    }
 }
 #endif
 
