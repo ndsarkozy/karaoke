@@ -6,7 +6,7 @@
 #define DISPLAY_TEST
 //#define DAC_TEST
 //#define RTC_TEST
-//#define SPOTIFY_TEST
+#define SPOTIFY_TEST
 //#define LRCLIB_TEST
 //#define LYRIC_SYNC_TEST
 //#define FULL_SYSTEM_TEST

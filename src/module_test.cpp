@@ -7,6 +7,10 @@
 #include "display.h"
 #endif
 
+#ifdef SPOTIFY_TEST
+#include "spotify.h"
+#endif
+
 // ── INIT ───────────────────────────────────────────────
 void Module_Test_Init(void) {
 
@@ -20,6 +24,7 @@ void Module_Test_Init(void) {
 
     #ifdef SPOTIFY_TEST
     wifi_connect();
+    spotify_refreshToken();
     #endif
 
     #ifdef LRCLIB_TEST
@@ -111,8 +116,22 @@ void RTC_Test(void) {
 #endif
 
 #ifdef SPOTIFY_TEST
+#include "spotify.h"
 void Spotify_Test(void) {
     Serial.println("[TEST] Spotify ───────────────");
+    bool ok = spotify_refreshToken();
+    if (!ok) {
+        Serial.println("[TEST] Spotify FAIL - token refresh");
+        return;
+    }
+    SpotifyTrack track;
+    ok = spotify_getNowPlaying(track);
+    if (ok) {
+        Serial.println("[TEST] Spotify PASS");
+        Serial.println("[TEST] Now playing: " + track.title + " by " + track.artist);
+    } else {
+        Serial.println("[TEST] Spotify FAIL - now playing");
+    }
 }
 #endif
 
