@@ -9,7 +9,7 @@
 //#define SPOTIFY_TEST
 //#define LRCLIB_TEST
 //#define LYRIC_SYNC_TEST
-#define FULL_SYSTEM_TEST
+//#define FULL_SYSTEM_TEST
 // ─────────────────────────────────────────────
 
 void Module_Test_Init(void);
