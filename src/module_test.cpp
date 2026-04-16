@@ -2,6 +2,7 @@
 #include "config.h"
 #include "net.h"
 #include "get_lyrics.h"
+#include "lyric_sync.h"
 #include <Arduino.h>
 
 #ifdef DISPLAY_TEST
@@ -29,6 +30,11 @@ void Module_Test_Init(void) {
     #endif
 
     #ifdef LRCLIB_TEST
+    wifi_connect();
+    spotify_refreshToken();
+    #endif
+
+    #ifdef LYRIC_SYNC_TEST
     wifi_connect();
     spotify_refreshToken();
     #endif
@@ -160,9 +166,39 @@ void LRCLib_Test(void) {
 #endif
 
 #ifdef LYRIC_SYNC_TEST
+#include "lyric_sync.h"
+#include "get_lyrics.h"
+#include "spotify.h"
 void LyricSync_Test(void) {
     Serial.println("[TEST] LyricSync ─────────────");
-    Serial.println("[TEST] LyricSync PASS");
+
+    // Need a track loaded first
+    SpotifyTrack track;
+    spotify_getNowPlaying(track);
+    if (track.title == "") {
+        Serial.println("[TEST] LyricSync SKIP - nothing playing");
+        return;
+    }
+
+    // Fetch lyrics for current track
+    bool ok = lyrics_fetch(track.title, track.artist);
+    if (!ok) {
+        Serial.println("[TEST] LyricSync SKIP - no lyrics found");
+        return;
+    }
+
+    // Test sync at current playback position
+    int line = sync_getCurrentLine(track.progressMs);
+    int next = sync_getNextLine(track.progressMs);
+
+    if (line >= 0) {
+        Serial.println("[TEST] LyricSync PASS");
+        Serial.println("[SYNC] Progress: " + String(track.progressMs / 1000) + "s");
+        Serial.println("[SYNC] Current line: " + lyrics[line].text);
+        Serial.println("[SYNC] Next line:    " + lyrics[next].text);
+    } else {
+        Serial.println("[TEST] LyricSync FAIL");
+    }
 }
 #endif
 
