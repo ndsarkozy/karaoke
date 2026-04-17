@@ -4,6 +4,8 @@
 #include <TJpg_Decoder.h>
 #include <Arduino.h>
 
+#define LYRIC_BG 0x0841
+
 static TFT_eSPI tft = TFT_eSPI();
 
 static bool jpegOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bitmap) {
@@ -172,15 +174,15 @@ static void renderWords(const String &seg, int y, int font,
             if (i > start) {
                 String w = seg.substring(start, i);
                 uint16_t col;
-                if      (wIdx < highlightWord)  col = 0x7BEF;       // past: gray
-                else if (wIdx == highlightWord) col = COLOR_YELLOW;  // current: yellow
-                else                            col = COLOR_WHITE;   // future: white
-                tft.setTextColor(col, COLOR_BLACK);
+                if      (wIdx < highlightWord)  col = 0x7BEF;
+                else if (wIdx == highlightWord) col = COLOR_YELLOW;
+                else                            col = COLOR_WHITE;
+                tft.setTextColor(col, LYRIC_BG);
                 tft.drawString(w, x, y);
                 x += tft.textWidth(w);
             }
             if (i < len) {
-                tft.setTextColor(COLOR_WHITE, COLOR_BLACK);
+                tft.setTextColor(COLOR_WHITE, LYRIC_BG);
                 tft.drawString(" ", x, y);
                 x += tft.textWidth(" ");
                 wIdx++;
@@ -195,9 +197,9 @@ void display_showLyrics(const String &currentLine, const String &nextLine, int h
     bool lineChanged = (currentLine != lastLine);
 
     if (lineChanged) {
-        // Clear lyric area and redraw accent separator only on line change
-        tft.fillRect(0, 88, 240, 90, COLOR_BLACK);
-        tft.drawFastHLine(50, 138, 140, 0x2104);  // subtle dim separator
+        // Fill lyric zone with dark panel (art stays visible above y=88)
+        tft.fillRect(0, 88, 240, 92, LYRIC_BG);
+        tft.drawFastHLine(50, 138, 140, 0x2104);
         lastLine = currentLine;
     }
 
@@ -239,10 +241,10 @@ void display_showLyrics(const String &currentLine, const String &nextLine, int h
     tft.setTextFont(1);
     tft.setTextDatum(MC_DATUM);
     if (nextLine.length() > 0) {
-        tft.setTextColor(0x4208, COLOR_BLACK);
+        tft.setTextColor(0x4208, LYRIC_BG);
         tft.drawString(nextLine.substring(0, 38), SCREEN_CENTER_X, 152);
     } else {
-        tft.setTextColor(COLOR_BLACK, COLOR_BLACK);
+        tft.setTextColor(LYRIC_BG, LYRIC_BG);
         tft.drawString("                                      ", SCREEN_CENTER_X, 152);
     }
 }
