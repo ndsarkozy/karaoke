@@ -1,5 +1,4 @@
 #include "spotify.h"
-#include "get_lyrics.h"
 #include "config.h"
 #include "net.h"
 #include <Arduino.h>
@@ -51,36 +50,51 @@ bool spotify_refreshToken() {
     return true;
 }
 
+static WiFiClientSecure nowPlayingClient;
+static HTTPClient       nowPlayingHttp;
+static bool             nowPlayingReady = false;
+
+void spotify_closeConnection() {
+    nowPlayingHttp.end();
+    nowPlayingClient.stop();
+}
+
 bool spotify_getNowPlaying(SpotifyTrack &track) {
     if (accessToken == "") {
         Serial.println("[Spotify] No access token");
         return false;
     }
 
-    HTTPClient http;
-    WiFiClientSecure client;
-    client.setInsecure();
+    if (!nowPlayingReady) {
+        nowPlayingClient.setInsecure();
+        nowPlayingReady = true;
+    }
 
-    http.begin(client, "https://api.spotify.com/v1/me/player/currently-playing");
-    http.setTimeout(5000);
-    http.addHeader("Authorization", "Bearer " + accessToken);
+    nowPlayingHttp.setReuse(true);
+    nowPlayingHttp.begin(nowPlayingClient, "https://api.spotify.com/v1/me/player/currently-playing");
+    nowPlayingHttp.setTimeout(5000);
+    nowPlayingHttp.addHeader("Authorization", "Bearer " + accessToken);
 
-    int code = http.GET();
+    int code = nowPlayingHttp.GET();
 
     if (code == 204) {
         Serial.println("[Spotify] Nothing playing");
-        http.end();
+        nowPlayingHttp.end();
         return false;
     }
 
     if (code != 200) {
         Serial.println("[Spotify] Now playing failed, HTTP " + String(code));
-        http.end();
+        nowPlayingHttp.end();
+        if (code < 0) {
+            // SSL error — drop connection so next call does a fresh handshake
+            nowPlayingClient.stop();
+        }
         return false;
     }
 
-    String payload = http.getString();
-    http.end();
+    String payload = nowPlayingHttp.getString();
+    nowPlayingHttp.end();
 
     JsonDocument doc;
     if (deserializeJson(doc, payload)) {
@@ -101,146 +115,4 @@ bool spotify_getNowPlaying(SpotifyTrack &track) {
     Serial.println("[Spotify] Progress: " + String(track.progressMs / 1000) + "s");
 
     return true;
-}
-
-// ── Internal helpers ──────────────────────────────────────────────────────────
-
-static bool parseLineSynced(JsonArray lines) {
-    for (JsonObject line : lines) {
-        if (lyricCount >= MAX_LYRIC_LINES) break;
-        const char* ms  = line["startTimeMs"] | "0";
-        const char* txt = line["words"]       | "";
-        String text(txt);
-        text.trim();
-        if (text.isEmpty() || text == "\u266a") continue;
-
-        lyrics[lyricCount].timestampMs = atol(ms);
-        lyrics[lyricCount].text        = text;
-        lyrics[lyricCount].wordOffset  = -1;
-        lyrics[lyricCount].wordCount   = 0;
-        lyricCount++;
-    }
-    Serial.println("[SpotifyLyrics] LINE_SYNCED: " + String(lyricCount) + " lines");
-    return lyricCount > 0;
-}
-
-static bool parseWordSynced(JsonArray lines) {
-    int    lineWordStart = 0;
-    int    lineWordCount = 0;
-    long   lineStartMs   = 0;
-    String lineText      = "";
-    long   prevWordMs    = -9999L;
-    bool   firstWord     = true;
-
-    for (JsonObject entry : lines) {
-        const char* msStr = entry["startTimeMs"] | "0";
-        const char* txt   = entry["words"]       | "";
-        String wordStr(txt);
-        wordStr.trim();
-        if (wordStr.isEmpty() || wordStr == "\u266a") continue;
-
-        long ms = atol(msStr);
-
-        // Debug: print first 5 entries so we can verify format
-        if (wordTimestampCount < 5) {
-            Serial.println("[WSYNCED] " + String(ms) + "ms: \"" + wordStr + "\"");
-        }
-
-        bool newLine = firstWord
-                       || (ms - prevWordMs > 1500)
-                       || (lineWordCount >= 6);
-
-        if (newLine && !firstWord) {
-            // Flush current line
-            if (lyricCount < MAX_LYRIC_LINES) {
-                lyrics[lyricCount].timestampMs = lineStartMs;
-                lyrics[lyricCount].text        = lineText;
-                lyrics[lyricCount].wordOffset  = lineWordStart;
-                lyrics[lyricCount].wordCount   = lineWordCount;
-                lyricCount++;
-            }
-            lineWordStart = wordTimestampCount;
-            lineWordCount = 0;
-            lineText      = "";
-        }
-
-        if (newLine) lineStartMs = ms;
-        firstWord = false;
-
-        if (wordTimestampCount < MAX_WORD_ENTRIES)
-            wordStartMs[wordTimestampCount++] = ms;
-
-        if (lineText.length() > 0) lineText += " ";
-        lineText      += wordStr;
-        lineWordCount++;
-        prevWordMs     = ms;
-    }
-
-    // Flush last line
-    if (lineWordCount > 0 && lyricCount < MAX_LYRIC_LINES) {
-        lyrics[lyricCount].timestampMs = lineStartMs;
-        lyrics[lyricCount].text        = lineText;
-        lyrics[lyricCount].wordOffset  = lineWordStart;
-        lyrics[lyricCount].wordCount   = lineWordCount;
-        lyricCount++;
-    }
-
-    Serial.println("[SpotifyLyrics] WORD_SYNCED: " + String(lyricCount)
-                   + " lines, " + String(wordTimestampCount) + " words");
-    return lyricCount > 0;
-}
-
-// ── Public ────────────────────────────────────────────────────────────────────
-
-bool spotify_getLyrics(const String &trackId) {
-    if (accessToken == "") {
-        Serial.println("[SpotifyLyrics] No access token");
-        return false;
-    }
-
-    HTTPClient http;
-    WiFiClientSecure client;
-    client.setInsecure();
-
-    String url = "https://spclient.wg.spotify.com/color-lyrics/v2/track/"
-                 + trackId + "?format=json&market=from_token";
-
-    http.begin(client, url);
-    http.addHeader("Authorization", "Bearer " + accessToken);
-    http.addHeader("App-Platform", "WebPlayer");
-    http.setTimeout(8000);
-
-    int code = http.GET();
-    if (code != 200) {
-        Serial.println("[SpotifyLyrics] HTTP " + String(code));
-        http.end();
-        return false;
-    }
-
-    // Filter keeps only the fields we need — avoids parsing the full payload
-    JsonDocument filter;
-    filter["lyrics"]["syncType"]             = true;
-    filter["lyrics"]["lines"][0]["startTimeMs"] = true;
-    filter["lyrics"]["lines"][0]["wordStrs"]       = true;
-
-    JsonDocument doc;
-    DeserializationError err = deserializeJson(
-        doc, *http.getStreamPtr(), DeserializationOption::Filter(filter));
-    http.end();
-
-    if (err) {
-        Serial.println("[SpotifyLyrics] Parse error: " + String(err.c_str()));
-        return false;
-    }
-
-    const char* syncType = doc["lyrics"]["syncType"] | "NONE";
-    Serial.println("[SpotifyLyrics] syncType: " + String(syncType));
-
-    lyrics_clear();
-    JsonArray lines = doc["lyrics"]["lines"].as<JsonArray>();
-
-    if (String(syncType) == "WORD_SYNCED") return parseWordSynced(lines);
-    if (String(syncType) == "LINE_SYNCED") return parseLineSynced(lines);
-
-    return false;
 }

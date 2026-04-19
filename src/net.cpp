@@ -6,6 +6,9 @@
 void wifi_connect() {
     Serial.println("[WiFi] Connecting to " + String(WIFI_SSID));
     WiFi.mode(WIFI_STA);
+    // Use Google + Cloudflare DNS instead of router DNS to avoid resolution failures
+    WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE,
+                IPAddress(8, 8, 8, 8), IPAddress(1, 1, 1, 1));
     WiFi.begin(WIFI_SSID, WIFI_PASS);
 
     int attempts = 0;

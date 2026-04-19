@@ -6,6 +6,8 @@
 #include "spotify.h"
 #include "display.h"
 #include <Arduino.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
 
 // ── INIT ───────────────────────────────────────────────
 void Module_Test_Init(void) {
@@ -29,6 +31,11 @@ void Module_Test_Init(void) {
     #endif
 
     #ifdef LYRIC_SYNC_TEST
+    wifi_connect();
+    spotify_refreshToken();
+    #endif
+
+    #ifdef LYRICS_FETCH_TEST
     wifi_connect();
     spotify_refreshToken();
     #endif
@@ -69,6 +76,10 @@ void Module_Test_Run(void) {
 
     #ifdef LYRIC_SYNC_TEST
     LyricSync_Test();
+    #endif
+
+    #ifdef LYRICS_FETCH_TEST
+    LyricsFetch_Test();
     #endif
 
     #ifdef FULL_SYSTEM_TEST
@@ -292,5 +303,98 @@ void FullSystem_Test(void) {
     }
 
     delay(100);
+}
+#endif
+
+// ── LYRICS FETCH TEST ──────────────────────────────────────────────────────────
+// Enable with: #define LYRICS_FETCH_TEST in module_test.h
+// Connects to WiFi+Spotify, watches the current track, and repeatedly tries
+// lrclib. Every attempt prints a full scenario so you can see exactly why
+// fetches fail or succeed.
+#ifdef LYRICS_FETCH_TEST
+void LyricsFetch_Test(void) {
+    static String  lastTrackId   = "";
+    static bool    lyricsLoaded  = false;
+    static int     attemptNumber = 0;
+    static unsigned long lastTry = 0;
+
+    // Retry every 4 seconds while lyrics haven't loaded
+    unsigned long now = millis();
+    if (lyricsLoaded || (now - lastTry < 4000)) {
+        delay(200);
+        return;
+    }
+    lastTry = now;
+
+    // ── 1. Check WiFi ────────────────────────────────────────────────────────
+    if (!wifi_connected()) {
+        Serial.println("[LTEST] SCENARIO: WiFi disconnected — skipping");
+        return;
+    }
+    Serial.println("[LTEST] WiFi OK  RSSI=" + String(WiFi.RSSI()) + " dBm");
+
+    // ── 2. Get current track ─────────────────────────────────────────────────
+    SpotifyTrack track;
+    unsigned long t0 = millis();
+    bool polled = spotify_getNowPlaying(track);
+    unsigned long spotifyRtt = millis() - t0;
+
+    if (!polled || track.trackId.length() == 0) {
+        Serial.println("[LTEST] SCENARIO: Spotify poll failed (HTTP RTT=" + String(spotifyRtt) + "ms) — nothing playing or token expired");
+        return;
+    }
+
+    Serial.println("[LTEST] Spotify OK  RTT=" + String(spotifyRtt) + "ms");
+    Serial.println("[LTEST] Track:  \"" + track.title + "\"");
+    Serial.println("[LTEST] Artist: \"" + track.artist + "\"");
+    Serial.println("[LTEST] ID:     " + track.trackId);
+    Serial.println("[LTEST] Pos:    " + String(track.progressMs / 1000) + "s / " + String(track.durationMs / 1000) + "s");
+
+    if (track.trackId != lastTrackId) {
+        lastTrackId   = track.trackId;
+        lyricsLoaded  = false;
+        attemptNumber = 0;
+        Serial.println("[LTEST] ── New track detected, resetting ──");
+    }
+
+    attemptNumber++;
+    Serial.println("[LTEST] ── Attempt #" + String(attemptNumber) + " ──────────────────────");
+
+    // ── 3. Raw TLS probe — time just the handshake separately ───────────────
+    Serial.println("[LTEST] RSSI at fetch: " + String(WiFi.RSSI()) + " dBm  heap=" + String(ESP.getFreeHeap()));
+
+    {
+        WiFiClientSecure probe;
+        probe.setInsecure();
+        probe.setHandshakeTimeout(4);
+        unsigned long tlsT0 = millis();
+        bool connected = probe.connect("lrclib.net", 443);
+        unsigned long tlsMs = millis() - tlsT0;
+        if (connected) {
+            Serial.println("[LTEST] TLS handshake OK  time=" + String(tlsMs) + "ms");
+            probe.stop();
+        } else {
+            Serial.println("[LTEST] TLS handshake FAILED  time=" + String(tlsMs) + "ms  — SSL stack issue or server unreachable");
+        }
+    }
+
+    // ── 4. Full lyrics fetch ─────────────────────────────────────────────────
+    Serial.println("[LTEST] Fetching lyrics...");
+    unsigned long fetchT0 = millis();
+    bool ok = lyrics_fetch(track.title, track.artist);
+    unsigned long fetchMs = millis() - fetchT0;
+
+    if (ok) {
+        lyricsLoaded = true;
+        Serial.println("[LTEST] RESULT: SUCCESS  lines=" + String(lyricCount) + "  time=" + String(fetchMs) + "ms");
+        Serial.println("[LTEST] First line [" + String(lyrics[0].timestampMs) + "ms]: " + lyrics[0].text);
+        Serial.println("[LTEST] Last  line [" + String(lyrics[lyricCount-1].timestampMs) + "ms]: " + lyrics[lyricCount-1].text);
+    } else {
+        Serial.println("[LTEST] RESULT: FAILED  time=" + String(fetchMs) + "ms");
+        if (fetchMs < 500)  Serial.println("[LTEST] CAUSE: Fast fail — DNS or TCP refused");
+        else if (fetchMs < 3000) Serial.println("[LTEST] CAUSE: SSL handshake failed (< 3s)");
+        else                Serial.println("[LTEST] CAUSE: Server accepted connection but response timed out (slow server)");
+    }
+    Serial.println();
 }
 #endif

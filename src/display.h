@@ -33,5 +33,6 @@ void display_showTrack(const String &title, const String &artist);
 void display_showTrackText(const String &title, const String &artist);
 void display_showLyric(const String &current, const String &next);
 bool display_drawJpeg(const uint8_t* buf, size_t len, int x, int y);
+void display_applyLyricGradient();   // call after drawJpeg to fade art → black at bottom
 // 2-row karaoke display: current line with per-word highlight, next line dimmed
 void display_showLyrics(const String &currentLine, const String &nextLine, int highlightWord = 0);

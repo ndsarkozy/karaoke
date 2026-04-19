@@ -36,6 +36,26 @@ static long parseTimestamp(const String &ts) {
     return (minutes * 60000) + (seconds * 1000) + (centiseconds * 10);
 }
 
+static String urlEncode(const String &s) {
+    String out;
+    out.reserve(s.length() * 2);
+    for (int i = 0; i < (int)s.length(); i++) {
+        uint8_t c = (uint8_t)s[i];
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
+            out += (char)c;
+        } else {
+            char buf[4];
+            snprintf(buf, sizeof(buf), "%%%02X", c);
+            out += buf;
+        }
+    }
+    return out;
+}
+
+static WiFiClientSecure lrclibClient;
+static bool             lrclibClientReady = false;
+
 bool lyrics_fetch(const String &title, const String &artist) {
     if (!wifi_connected()) {
         Serial.println("[Lyrics] WiFi not connected");
@@ -44,49 +64,48 @@ bool lyrics_fetch(const String &title, const String &artist) {
 
     lyrics_clear();
 
-    // Build URL with encoded title and artist
-    String url = "https://lrclib.net/api/get?track_name="
-                 + title + "&artist_name=" + artist;
+    if (!lrclibClientReady) {
+        lrclibClient.setInsecure();
+        lrclibClient.setHandshakeTimeout(4);
+        lrclibClientReady = true;
+    }
 
-    // URL encode spaces
-    url.replace(" ", "%20");
+    String url = "https://lrclib.net/api/get?track_name="
+                 + urlEncode(title) + "&artist_name=" + urlEncode(artist);
 
     HTTPClient http;
-    WiFiClientSecure client;
-    client.setInsecure();
-
-    http.begin(client, url);
+    http.begin(lrclibClient, url);
+    http.setTimeout(4000);
     http.addHeader("User-Agent", "karaoke-esp32/1.0");
     int code = http.GET();
 
     if (code != 200) {
         Serial.println("[Lyrics] Fetch failed, HTTP " + String(code));
         http.end();
+        lrclibClient.stop();  // force fresh handshake on next attempt
         return false;
     }
 
     String payload = http.getString();
     http.end();
+    // don't stop lrclibClient — keep connection alive for reuse
 
-    // Find syncedLyrics field in JSON manually
-    // to avoid large JSON doc allocation
-    int lrcStart = payload.indexOf("\"syncedLyrics\":\"");
-    if (lrcStart < 0) {
-        Serial.println("[Lyrics] No synced lyrics found");
-        return false;
+    int lrcStart = payload.indexOf("\"syncedLyrics\":");
+    if (lrcStart < 0) { Serial.println("[Lyrics] No syncedLyrics field"); return false; }
+    lrcStart = payload.indexOf('"', lrcStart + 15);
+    if (lrcStart < 0) { Serial.println("[Lyrics] No opening quote"); return false; }
+    lrcStart++;  // skip opening quote
+
+    int lrcEnd = lrcStart;
+    while (lrcEnd < (int)payload.length()) {
+        if (payload[lrcEnd] == '\\') { lrcEnd += 2; continue; }
+        if (payload[lrcEnd] == '"')  break;
+        lrcEnd++;
     }
 
-    lrcStart += 16; // skip past "syncedLyrics":"
-    int lrcEnd = payload.indexOf("\",", lrcStart);
-    if (lrcEnd < 0) lrcEnd = payload.indexOf("\"}", lrcStart);
-    if (lrcEnd < 0) {
-        Serial.println("[Lyrics] Could not find end of lyrics");
-        return false;
-    }
+    if (lrcEnd >= (int)payload.length()) { Serial.println("[Lyrics] No closing quote"); return false; }
 
     String lrc = payload.substring(lrcStart, lrcEnd);
-
-    // Replace \n with actual newlines
     lrc.replace("\\n", "\n");
 
     // Parse each line
@@ -127,3 +146,4 @@ void lyrics_printAll() {
                        + lyrics[i].text);
     }
 }
+

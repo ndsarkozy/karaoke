@@ -10,118 +10,70 @@
 #include "get_lyrics.h"
 #include "lyric_sync.h"
 #include "net.h"
+#include "module_test.h"
 
 // ── Shared state ──────────────────────────────────────────────────────────────
 static SemaphoreHandle_t xMutex;
 static SemaphoreHandle_t httpMutex;     // only one SSL/HTTP connection at a time
 static TaskHandle_t      fetchTaskHandle = NULL;
 
-static volatile bool          lyricsReady    = false;
-static volatile bool          newTrackFlag   = false;
-static volatile bool          artReady       = false;
-static volatile bool          isPlaying      = false;
+static volatile bool          lyricsReady      = false;
+static volatile bool          newTrackFlag     = false;
+static volatile bool          isPlaying        = false;
+static volatile bool          fetchAbort       = false;
+static volatile bool          snapOnNextPoll   = false;
 
 static volatile long          progressAnchor = 0;
 static volatile unsigned long milliAnchor    = 0;
-
-static String                 trackTitle     = "";
-static String                 trackArtist    = "";
-static uint8_t*               artBuffer      = nullptr;
-static size_t                 artBufferSize  = 0;
 
 // Staged by pollTask, consumed by fetchTask
 static String                 pendingTrackId = "";
 static String                 pendingTitle   = "";
 static String                 pendingArtist  = "";
-static String                 pendingArtUrl  = "";
 
-// ── Download raw bytes from URL into heap buffer ──────────────────────────────
-// Caller must hold httpMutex
-static uint8_t* fetchBuffer(const String &url, size_t &outLen) {
-    HTTPClient http;
-    WiFiClientSecure client;
-    client.setInsecure();
-    http.begin(client, url);
-    http.setTimeout(8000);
-
-    if (http.GET() != 200) { http.end(); return nullptr; }
-
-    int contentLen = http.getSize();
-    if (contentLen > 40000) { http.end(); return nullptr; }
-
-    size_t bufSize = (contentLen > 0) ? (size_t)contentLen : 40000;
-    uint8_t* buf = (uint8_t*)malloc(bufSize);
-    if (!buf) { http.end(); return nullptr; }
-
-    WiFiClient* stream = http.getStreamPtr();
-    size_t total = 0;
-    unsigned long deadline = millis() + 8000;
-
-    while (millis() < deadline && total < bufSize) {
-        int avail = stream->available();
-        if (avail > 0) {
-            total += stream->readBytes(buf + total, min((int)(bufSize - total), avail));
-        } else if (!stream->connected()) {
-            break;
-        } else {
-            delay(1);
-        }
-    }
-
-    http.end();
-    if (total == 0) { free(buf); return nullptr; }
-    outLen = total;
-    return buf;
-}
-
-// ── Fetch task: lyrics first, art second ─────────────────────────────────────
+// ── Fetch task: lyrics only ───────────────────────────────────────────────────
 static void fetchTask(void *pv) {
+    static int consecutiveFailures = 0;
+
     while (true) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        fetchAbort = false;
 
         xSemaphoreTake(xMutex, portMAX_DELAY);
-        String trackId = pendingTrackId;
         String title   = pendingTitle;
         String artist  = pendingArtist;
-        String artUrl  = pendingArtUrl;
+        String trackId = pendingTrackId;
         xSemaphoreGive(xMutex);
 
         Serial.println("[FETCH] Starting: " + title);
 
-        // ── 1. Lyrics first — release httpMutex after so pollTask can poll ──
+        // Single attempt — release httpMutex immediately so polls aren't blocked
         xSemaphoreTake(httpMutex, portMAX_DELAY);
-        bool ok = spotify_getLyrics(trackId);
+        spotify_closeConnection();
+        bool ok = lyrics_fetch(title, artist);
         xSemaphoreGive(httpMutex);
 
-        if (!ok) {
-            xSemaphoreTake(httpMutex, portMAX_DELAY);
-            ok = lyrics_fetch(title, artist);
-            xSemaphoreGive(httpMutex);
+        if (!fetchAbort) {
+            xSemaphoreTake(xMutex, portMAX_DELAY);
+            lyricsReady    = ok;
+            snapOnNextPoll = ok;
+            xSemaphoreGive(xMutex);
         }
-
-        xSemaphoreTake(xMutex, portMAX_DELAY);
-        lyricsReady = ok;
-        xSemaphoreGive(xMutex);
 
         Serial.println("[FETCH] Lyrics " + String(ok ? "OK" : "FAIL"));
 
-        // ── 2. Art second — httpMutex released before and after ─────────────
-        if (artUrl.length() > 0) {
-            size_t artLen = 0;
-            uint8_t* art = nullptr;
-
-            xSemaphoreTake(httpMutex, portMAX_DELAY);
-            art = fetchBuffer(artUrl, artLen);
-            xSemaphoreGive(httpMutex);
-
-            xSemaphoreTake(xMutex, portMAX_DELAY);
-            if (artBuffer) { free(artBuffer); artBuffer = nullptr; }
-            artBuffer     = art;
-            artBufferSize = artLen;
-            artReady      = (art != nullptr);
-            xSemaphoreGive(xMutex);
-
-            Serial.println("[FETCH] Art " + String(art ? "OK" : "FAIL"));
+        if (ok) {
+            consecutiveFailures = 0;
+        } else if (!fetchAbort) {
+            consecutiveFailures++;
+            if (consecutiveFailures >= 5) {
+                Serial.println("[FETCH] SSL stack unrecoverable — rebooting");
+                vTaskDelay(pdMS_TO_TICKS(300));
+                ESP.restart();
+            }
+            // Retry after 5s; httpMutex is free so Spotify polls run normally
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            if (!fetchAbort) xTaskNotifyGive(fetchTaskHandle);
         }
     }
 }
@@ -152,7 +104,6 @@ static void pollTask(void *pv) {
 
             // Skip this poll cycle if fetchTask is mid-download
             if (xSemaphoreTake(httpMutex, pdMS_TO_TICKS(150)) != pdTRUE) {
-                fastPollCount++;   // retry next cycle at fast rate
                 vTaskDelay(pdMS_TO_TICKS(50));
                 continue;
             }
@@ -176,6 +127,13 @@ static void pollTask(void *pv) {
             if (pauseChanged) {
                 lastIsPlaying = track.isPlaying;
                 Serial.println(track.isPlaying ? "[POLL] Resumed" : "[POLL] Paused");
+                if (track.isPlaying) {
+                    long rtt_comp = (long)min(rtt / 2, (unsigned long)400);
+                    xSemaphoreTake(xMutex, portMAX_DELAY);
+                    progressAnchor = track.progressMs + rtt_comp;
+                    milliAnchor    = t_recv;
+                    xSemaphoreGive(xMutex);
+                }
                 fastPollCount = 12;
             }
 
@@ -189,11 +147,9 @@ static void pollTask(void *pv) {
                 long rtt_comp = (long)min(rtt / 2, (unsigned long)400);
 
                 xSemaphoreTake(xMutex, portMAX_DELAY);
-                trackTitle     = track.title;
-                trackArtist    = track.artist;
                 newTrackFlag   = true;
                 lyricsReady    = false;
-                artReady       = false;
+                snapOnNextPoll = false;
                 isPlaying      = track.isPlaying;
                 progressAnchor = track.progressMs + rtt_comp;
                 milliAnchor    = t_recv;
@@ -201,11 +157,9 @@ static void pollTask(void *pv) {
                 pendingTrackId = track.trackId;
                 pendingTitle   = track.title;
                 pendingArtist  = track.artist;
-                pendingArtUrl  = track.albumArtUrl;
-
-                if (artBuffer) { free(artBuffer); artBuffer = nullptr; }
                 xSemaphoreGive(xMutex);
 
+                fetchAbort = true;
                 if (fetchTaskHandle) xTaskNotifyGive(fetchTaskHandle);
 
                 vTaskDelay(pdMS_TO_TICKS(50));
@@ -229,7 +183,13 @@ static void pollTask(void *pv) {
                 long local     = progressAnchor + (long)(t_recv - milliAnchor);
                 long drift     = corrected - local;
 
-                if (abs(drift) > 3000) {
+                if (snapOnNextPoll) {
+                    // First poll after lyrics loaded — re-anchor cleanly
+                    Serial.println("[POLL] Lyrics anchor snap drift=" + String(drift) + "ms");
+                    progressAnchor = corrected;
+                    milliAnchor    = t_recv;
+                    snapOnNextPoll = false;
+                } else if (abs(drift) > 2000) {
                     // Seek: snap immediately
                     Serial.println("[POLL] Seek snap drift=" + String(drift) + "ms");
                     progressAnchor = corrected;
@@ -259,6 +219,13 @@ void setup() {
     Serial.begin(115200);
     delay(500);
 
+#if defined(WIFI_TEST) || defined(DISPLAY_TEST) || defined(DAC_TEST) || \
+    defined(RTC_TEST)  || defined(SPOTIFY_TEST)  || defined(LRCLIB_TEST) || \
+    defined(LYRIC_SYNC_TEST) || defined(LYRICS_FETCH_TEST) || defined(FULL_SYSTEM_TEST)
+    Module_Test_Init();
+    return;
+#endif
+
     xMutex    = xSemaphoreCreateMutex();
     httpMutex = xSemaphoreCreateMutex();
 
@@ -273,7 +240,7 @@ void setup() {
     display_showMessage("Ready", "", COLOR_GREEN);
 
     // fetchTask created first so handle is valid when pollTask starts
-    xTaskCreatePinnedToCore(fetchTask, "fetch", 10240, NULL, 1, &fetchTaskHandle, 0);
+    xTaskCreatePinnedToCore(fetchTask, "fetch", 8192,  NULL, 1, &fetchTaskHandle, 0);
     xTaskCreatePinnedToCore(pollTask,  "poll",  8192,  NULL, 2, NULL,             0);
 }
 
@@ -282,39 +249,28 @@ static int  lastLine          = -1;
 static int  lastHighlightWord = -1;
 
 void loop() {
+#if defined(WIFI_TEST) || defined(DISPLAY_TEST) || defined(DAC_TEST) || \
+    defined(RTC_TEST)  || defined(SPOTIFY_TEST)  || defined(LRCLIB_TEST) || \
+    defined(LYRIC_SYNC_TEST) || defined(LYRICS_FETCH_TEST) || defined(FULL_SYSTEM_TEST)
+    Module_Test_Run();
+    return;
+#endif
+
     xSemaphoreTake(xMutex, portMAX_DELAY);
 
     bool ready    = lyricsReady;
     bool newTrack = newTrackFlag;
-    bool hasArt   = artReady;
     bool playing  = isPlaying;
 
     long          anchor  = progressAnchor;
     unsigned long mAnchor = milliAnchor;
 
-    uint8_t* artBuf = nullptr;
-    size_t   artSz  = 0;
-
     if (newTrack) newTrackFlag = false;
-
-    if (hasArt) {
-        artBuf    = artBuffer;
-        artSz     = artBufferSize;
-        artBuffer = nullptr;
-        artReady  = false;
-    }
 
     xSemaphoreGive(xMutex);
 
     if (newTrack) {
         display_clear();
-        lastLine          = -1;
-        lastHighlightWord = -1;
-    }
-
-    if (hasArt && artBuf) {
-        display_drawJpeg(artBuf, artSz, -30, -30);
-        free(artBuf);
         lastLine          = -1;
         lastHighlightWord = -1;
     }

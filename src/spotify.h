@@ -13,4 +13,4 @@ struct SpotifyTrack {
 
 bool spotify_refreshToken();
 bool spotify_getNowPlaying(SpotifyTrack &track);
-bool spotify_getLyrics(const String &trackId);
+void spotify_closeConnection();

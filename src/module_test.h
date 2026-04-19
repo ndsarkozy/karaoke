@@ -9,6 +9,7 @@
 //#define SPOTIFY_TEST
 //#define LRCLIB_TEST
 //#define LYRIC_SYNC_TEST
+//#define LYRICS_FETCH_TEST
 //#define FULL_SYSTEM_TEST
 // ─────────────────────────────────────────────
 
@@ -41,6 +42,10 @@ void LRCLib_Test(void);
 
 #ifdef LYRIC_SYNC_TEST
 void LyricSync_Test(void);
+#endif
+
+#ifdef LYRICS_FETCH_TEST
+void LyricsFetch_Test(void);
 #endif
 
 #ifdef FULL_SYSTEM_TEST

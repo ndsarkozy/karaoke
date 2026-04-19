@@ -4,7 +4,13 @@
 #include <TJpg_Decoder.h>
 #include <Arduino.h>
 
-#define LYRIC_BG 0x0841
+// Wide dark band covers center; art visible at top (0-60) and bottom (197-240)
+#define BAND_FADE_TOP   60   // gradient fade-in starts
+#define BAND_SOLID_TOP  75   // solid dark zone begins
+#define BAND_SOLID_BTM  182  // solid dark zone ends
+#define BAND_FADE_BTM   197  // gradient fade-out ends
+#define LYRIC_CLEAR_TOP 75   // fillRect before each lyric redraw
+#define NEXT_LINE_Y     168  // top-y of dimmed next-line (within solid zone)
 
 static TFT_eSPI tft = TFT_eSPI();
 
@@ -107,6 +113,21 @@ bool display_drawJpeg(const uint8_t* buf, size_t len, int x, int y) {
     return (res == JDR_OK);
 }
 
+void display_applyLyricGradient() {
+    // Top fade: art → black (y=60–75)
+    tft.fillRect(0,  60, 240, 4, 0x2104);
+    tft.fillRect(0,  64, 240, 4, 0x1082);
+    tft.fillRect(0,  68, 240, 4, 0x0841);
+    tft.fillRect(0,  72, 240, 3, 0x0421);
+    // Solid dark band where lyrics live (y=75–182)
+    tft.fillRect(0,  75, 240, 107, COLOR_BLACK);
+    // Bottom fade: black → art (y=182–197)
+    tft.fillRect(0, 182, 240, 4, 0x0421);
+    tft.fillRect(0, 186, 240, 4, 0x0841);
+    tft.fillRect(0, 190, 240, 4, 0x1082);
+    tft.fillRect(0, 194, 240, 3, 0x2104);
+}
+
 void display_showLyric(const String &current, const String &next) {
     tft.fillRect(0, 130, 240, 110, COLOR_BLACK);
 
@@ -131,31 +152,36 @@ void display_showLyric(const String &current, const String &next) {
     tft.drawString(next.substring(0, 30), SCREEN_CENTER_X, 200);
 }
 
-// Returns the char index of the best space to split on, -1 if fits on one line
-static int findSplitChar(const String &text, int font, int maxW) {
+// Greedy word-wrap: fill each line left-to-right, split when next word overflows.
+// Supports up to 3 splits (4 lines). splits[] receives space indices where line breaks go.
+static int findSplits(const String &text, int font, int maxW, int splits[3]) {
+    splits[0] = splits[1] = splits[2] = -1;
     tft.setTextFont(font);
-    if (tft.textWidth(text) <= maxW) return -1;
+    if (tft.textWidth(text) <= maxW) return 0;
 
-    int best   = -1;
-    int bestMax = 99999;
+    int nSplits  = 0;
+    int segStart = 0;
+    int wordStart = 0;
+    int len = (int)text.length();
 
-    for (int i = 1; i < (int)text.length(); i++) {
-        if (text[i] != ' ') continue;
-        String left  = text.substring(0, i);
-        String right = text.substring(i + 1);
-        int lw = tft.textWidth(left);
-        int rw = tft.textWidth(right);
-        if (lw <= maxW && rw <= maxW) {
-            int mx = max(lw, rw);
-            if (mx < bestMax) { bestMax = mx; best = i; }
+    for (int i = 0; i <= len; i++) {
+        if (i == len || text[i] == ' ') {
+            // Check if text from segStart up to (not including) this space fits
+            String candidate = text.substring(segStart, i);
+            if (tft.textWidth(candidate) > maxW && wordStart > segStart) {
+                // Split before the current word (space is at wordStart-1)
+                splits[nSplits++] = wordStart - 1;
+                segStart = wordStart;
+                if (nSplits >= 3) break;
+            }
+            wordStart = i + 1;
         }
     }
-    return best;
+    return nSplits;
 }
 
-// Draw a segment of text word-by-word with karaoke coloring:
-//   past words = gray, current = yellow, future = white
-// wOffset = how many words precede this segment in the full line
+// Draw one segment word-by-word with karaoke colouring (transparent background).
+// wOffset = number of words that precede this segment in the full line.
 static void renderWords(const String &seg, int y, int font,
                         int highlightWord, int wOffset) {
     tft.setTextFont(font);
@@ -163,26 +189,24 @@ static void renderWords(const String &seg, int y, int font,
 
     int totalW = tft.textWidth(seg);
     int x = SCREEN_CENTER_X - totalW / 2;
-    if (x < 3) x = 3;
+    if (x < 2) x = 2;
 
-    int wIdx  = wOffset;
-    int start = 0;
-    int len   = (int)seg.length();
+    int wIdx = wOffset, start = 0, len = (int)seg.length();
 
     for (int i = 0; i <= len; i++) {
         if (i == len || seg[i] == ' ') {
             if (i > start) {
                 String w = seg.substring(start, i);
                 uint16_t col;
-                if      (wIdx < highlightWord)  col = 0x7BEF;
-                else if (wIdx == highlightWord) col = COLOR_YELLOW;
-                else                            col = COLOR_WHITE;
-                tft.setTextColor(col, LYRIC_BG);
+                if      (wIdx < highlightWord)  col = 0x9492;       // past: medium gray
+                else if (wIdx == highlightWord) col = COLOR_YELLOW;  // current: yellow
+                else                            col = COLOR_WHITE;   // future: white
+                tft.setTextColor(col);   // single-arg = transparent background
                 tft.drawString(w, x, y);
                 x += tft.textWidth(w);
             }
             if (i < len) {
-                tft.setTextColor(COLOR_WHITE, LYRIC_BG);
+                tft.setTextColor(COLOR_WHITE);
                 tft.drawString(" ", x, y);
                 x += tft.textWidth(" ");
                 wIdx++;
@@ -193,58 +217,58 @@ static void renderWords(const String &seg, int y, int font,
 }
 
 void display_showLyrics(const String &currentLine, const String &nextLine, int highlightWord) {
-    static String lastLine = "";
-    bool lineChanged = (currentLine != lastLine);
-
-    if (lineChanged) {
-        // Fill lyric zone with dark panel (art stays visible above y=88)
-        tft.fillRect(0, 88, 240, 92, LYRIC_BG);
-        tft.drawFastHLine(50, 138, 140, 0x2104);
-        lastLine = currentLine;
-    }
+    tft.fillRect(0, LYRIC_CLEAR_TOP, 240, BAND_SOLID_BTM - LYRIC_CLEAR_TOP, COLOR_BLACK);
 
     if (currentLine.length() == 0) return;
 
-    // Choose font + split strategy:
-    //   font2 1-line → font2 2-line → font1 1-line → font1 2-line
-    int font    = 2;
-    int splitAt = -1;
+    // Font 2 (16px), up to 4 lines, 22px pitch (6px gap between lines)
+    static const int FONT  = 2;
+    static const int FONTH = 16;
+    static const int LINEH = 22;
 
-    tft.setTextFont(2);
-    if (tft.textWidth(currentLine) > 200) {
-        splitAt = findSplitChar(currentLine, 2, 200);
-        if (splitAt < 0) {
-            font    = 1;
-            splitAt = findSplitChar(currentLine, 1, 225);
-        }
+    int splits[3];
+    int nSplits = findSplits(currentLine, FONT, 224, splits);
+    int nLines  = nSplits + 1;
+    int blockH  = (nLines - 1) * LINEH + FONTH;
+
+    // Vertically centre block between LYRIC_CLEAR_TOP and NEXT_LINE_Y
+    int zoneH  = NEXT_LINE_Y - LYRIC_CLEAR_TOP;
+    int startY = LYRIC_CLEAR_TOP + (zoneH - blockH) / 2;
+    if (startY < LYRIC_CLEAR_TOP) startY = LYRIC_CLEAR_TOP;
+
+    // Build segments from split points
+    String parts[4];
+    int    wOffsets[4] = {0, 0, 0, 0};
+    int    boundaries[4] = { 0,
+        (nSplits >= 1) ? splits[0] + 1 : (int)currentLine.length(),
+        (nSplits >= 2) ? splits[1] + 1 : (int)currentLine.length(),
+        (nSplits >= 3) ? splits[2] + 1 : (int)currentLine.length()
+    };
+    for (int i = 0; i < nLines; i++) {
+        int from = boundaries[i];
+        int to   = (i < nSplits) ? splits[i] : (int)currentLine.length();
+        parts[i] = currentLine.substring(from, to);
+    }
+    // Word offsets: cumulative word count up to each segment
+    for (int s = 1; s < nLines; s++) {
+        int w = 1;
+        for (char c : parts[s-1]) if (c == ' ') w++;
+        wOffsets[s] = wOffsets[s-1] + w;
     }
 
-    if (splitAt < 0) {
-        // Single line — vertically centered near display center
-        renderWords(currentLine, 112, font, highlightWord, 0);
-    } else {
-        // Two lines — count word offset for second segment
-        String part1 = currentLine.substring(0, splitAt);
-        String part2 = currentLine.substring(splitAt + 1);
+    for (int i = 0; i < nLines; i++)
+        renderWords(parts[i], startY + i * LINEH, FONT, highlightWord, wOffsets[i]);
 
-        int wOffset = 0;
-        for (char c : part1) if (c == ' ') wOffset++;
-        wOffset++;  // part2 begins at the next word
-
-        int y1 = (font == 2) ? 97 : 102;
-        int y2 = (font == 2) ? 117 : 114;
-        renderWords(part1, y1, font, highlightWord, 0);
-        renderWords(part2, y2, font, highlightWord, wOffset);
-    }
-
-    // Next line: very dim, font 1, drawn in-place (no clear needed)
-    tft.setTextFont(1);
-    tft.setTextDatum(MC_DATUM);
+    // Next line: font 1 (8px), dimmed, centered
     if (nextLine.length() > 0) {
-        tft.setTextColor(0x4208, LYRIC_BG);
-        tft.drawString(nextLine.substring(0, 38), SCREEN_CENTER_X, 152);
-    } else {
-        tft.setTextColor(LYRIC_BG, LYRIC_BG);
-        tft.drawString("                                      ", SCREEN_CENTER_X, 152);
+        tft.setTextFont(1);
+        tft.setTextDatum(TC_DATUM);
+        String nl = nextLine;
+        while (nl.length() > 1 && tft.textWidth(nl) > 224) {
+            int sp = nl.lastIndexOf(' ');
+            nl = (sp > 0) ? nl.substring(0, sp) : nl.substring(0, nl.length() - 1);
+        }
+        tft.setTextColor(0x528A);
+        tft.drawString(nl, SCREEN_CENTER_X, NEXT_LINE_Y);
     }
 }
