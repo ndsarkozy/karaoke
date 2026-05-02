@@ -6,33 +6,63 @@
 
 static TFT_eSPI tft = TFT_eSPI();
 
-// Cached album buffer so lyrics can redraw art to clear old text
-static const uint8_t* s_albumBuf     = nullptr;
-static size_t         s_albumLen     = 0;
-static bool           s_albumLoaded  = false;
-static int            s_lastArcAngle = -1;
+// ─── Cached state ────────────────────────────────────────────────────────────
+static const uint8_t* s_albumBuf      = nullptr;
+static size_t         s_albumLen      = 0;
+static bool           s_albumLoaded   = false;
+static int            s_lastArcAngle  = -1;
+static long           s_lastProgress  = 0;
+static long           s_lastDuration  = 0;
 
-// Cached track info so display_showLyrics can re-stamp it after art redraw
 static String s_title  = "";
 static String s_artist = "";
 
-// ── JPEG callback (center-crop to 240×240) ───────────────────────────────────
+// ─── Album cache (post-dim) ──────────────────────────────────────────────────
+// Captures the *dimmed* decoded album rows once at album-load. On line change
+// we pushImage the cached pixels back to wipe old text without re-decoding.
+#define ALBUM_CACHE_Y     76
+#define ALBUM_CACHE_H     124
+static uint16_t* s_albumCache       = nullptr;
+static bool      s_albumCacheValid  = false;
+static bool      s_capturingAlbum   = false;
+
+// Dim factor for album backdrop (Car Thing aesthetic — art is a textured
+// background, not the focus). Halves each RGB565 channel via mask + shift.
+//   shift=1 → ~50% brightness
+//   shift=2 → ~25% brightness (more dramatic)
+#define DIM_HALVE(c)   (((c) >> 1) & 0x7BEF)
+#define DIM_QUARTER(c) (((c) >> 2) & 0x39E7)
+
+// ─── JPEG callback: dim each block in place, push, then capture to cache ────
 static bool jpegOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bm) {
     int16_t x1 = max(x, (int16_t)0), y1 = max(y, (int16_t)0);
     int16_t x2 = min((int16_t)(x + w), (int16_t)240);
     int16_t y2 = min((int16_t)(y + h), (int16_t)240);
     if (x1 >= x2 || y1 >= y2) return true;
+
+    // Dim every pixel of this block in place. Halve once (50%), then again on
+    // top-half of screen to fade title area more — matches Car Thing's heavier
+    // dim toward the top where artist/title sit.
+    int blockN = w * h;
+    for (int i = 0; i < blockN; i++) bm[i] = DIM_HALVE(bm[i]);
+
     tft.pushImage(x1, y1, x2-x1, y2-y1, bm + (y1-y)*w + (x1-x));
+
+    if (s_capturingAlbum && s_albumCache) {
+        int16_t cy1 = max(y1, (int16_t)ALBUM_CACHE_Y);
+        int16_t cy2 = min(y2, (int16_t)(ALBUM_CACHE_Y + ALBUM_CACHE_H));
+        for (int row = cy1; row < cy2; row++) {
+            int srcRow = row - y;
+            int dstRow = row - ALBUM_CACHE_Y;
+            memcpy(&s_albumCache[dstRow * 240 + x1],
+                   bm + srcRow * w + (x1 - x),
+                   (x2 - x1) * sizeof(uint16_t));
+        }
+    }
     return true;
 }
 
-// Dark wash sized for the GC9A01 circle — widest usable band starts ~y=40
-static void applyTopOverlay() {
-    tft.fillRect(0, 38, 240, 32, 0x1082);   // y=38-70, ~210 px wide at center
-    tft.drawFastHLine(20, 70, 200, SPOTIFY_GREEN);
-}
-
-// ── Public API ────────────────────────────────────────────────────────────────
+// ─── Init ────────────────────────────────────────────────────────────────────
 void display_init() {
     pinMode(TFT_BL, OUTPUT);
     digitalWrite(TFT_BL, HIGH);
@@ -42,7 +72,8 @@ void display_init() {
     TJpgDec.setJpgScale(1);
     TJpgDec.setSwapBytes(true);
     TJpgDec.setCallback(jpegOutput);
-    Serial.println("[Display] Initialized");
+    Serial.printf("[Display] Initialized (free heap=%u)\n",
+                  (unsigned)ESP.getFreeHeap());
 }
 
 void display_fill(uint16_t c)   { tft.fillScreen(c); }
@@ -52,67 +83,116 @@ void display_fillCircle(int x, int y, int r, uint16_t c) { tft.fillCircle(x,y,r,
 void display_brightness(uint8_t v) { analogWrite(TFT_BL, v); }
 
 void display_print(const String &text, int x, int y, uint16_t color, uint8_t size) {
+    tft.setFreeFont(NULL);
     tft.setTextColor(color, COLOR_BLACK);
     tft.setTextSize(size);
     tft.setCursor(x, y);
     tft.print(text);
 }
 
+// ─── Idle splash ─────────────────────────────────────────────────────────────
 void display_showMessage(const String &l1, const String &l2, uint16_t color) {
     display_clear();
-    display_print(l1, 20, 100, color, 2);
-    display_print(l2, 20, 130, color, 2);
+    tft.drawCircle(120, 120, 119, COLOR_ACCENT_DIM);
+    tft.drawCircle(120, 120, 118, OVERLAY_DARK);
+
+    tft.setTextDatum(MC_DATUM);
+    tft.setFreeFont(&FreeSansBold12pt7b);
+    tft.setTextColor(COLOR_TEXT_HI, COLOR_BLACK);
+    tft.drawString(l1, 120, 110);
+
+    tft.setFreeFont(&FreeSans9pt7b);
+    tft.setTextColor(COLOR_ACCENT, COLOR_BLACK);
+    tft.drawString(l2, 120, 138);
+
+    tft.setFreeFont(NULL);
+    tft.setTextDatum(TL_DATUM);
 }
 
-// ── Album art ─────────────────────────────────────────────────────────────────
+// ─── Album art ───────────────────────────────────────────────────────────────
 bool display_drawAlbum(const uint8_t* buf, size_t len) {
     if (!buf || len == 0) return false;
+
+    if (!s_albumCache) {
+        s_albumCache = (uint16_t*)malloc(240 * ALBUM_CACHE_H * sizeof(uint16_t));
+        Serial.printf("[Display] Album cache alloc %s (free heap=%u)\n",
+                      s_albumCache ? "ok" : "FAIL", (unsigned)ESP.getFreeHeap());
+    }
+
+    s_capturingAlbum = (s_albumCache != nullptr);
     JRESULT res = TJpgDec.drawJpg(0, 0, buf, (uint32_t)len);
-    if (res != JDR_OK) return false;
-    s_albumBuf    = buf;
-    s_albumLen    = len;
-    s_albumLoaded = true;
-    s_lastArcAngle = -1;
-    applyTopOverlay();
+    s_capturingAlbum = false;
+    if (res != JDR_OK) { s_albumCacheValid = false; return false; }
+    s_albumBuf        = buf;
+    s_albumLen        = len;
+    s_albumLoaded     = true;
+    s_albumCacheValid = (s_albumCache != nullptr);
+    s_lastArcAngle    = -1;
     return true;
 }
 
-// ── Track info ────────────────────────────────────────────────────────────────
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+static String fitText(const String &in, int maxW) {
+    if (tft.textWidth(in) <= maxW) return in;
+    String t = in;
+    while (t.length() > 1 && tft.textWidth(t + "…") > maxW)
+        t = t.substring(0, t.length() - 1);
+    return t + "…";
+}
+
+// Letter-tracked drawString: emulates small-caps tracking (Car Thing artist)
+static int trackedWidth(const String &s, int trackPx) {
+    int w = 0;
+    for (int i = 0; i < (int)s.length(); i++) {
+        char cs[2] = { (char)s[i], 0 };
+        w += tft.textWidth(cs) + trackPx;
+    }
+    return w > 0 ? w - trackPx : 0;
+}
+
+static void drawTrackedCentered(const String &s, int cx, int y, uint16_t col, int trackPx) {
+    int totalW = trackedWidth(s, trackPx);
+    int x = cx - totalW / 2;
+    tft.setTextDatum(TL_DATUM);
+    tft.setTextColor(col);   // transparent bg — text floats on dimmed art
+    for (int i = 0; i < (int)s.length(); i++) {
+        char cs[2] = { (char)s[i], 0 };
+        tft.drawString(cs, x, y);
+        x += tft.textWidth(cs) + trackPx;
+    }
+}
+
+// ─── Track info: artist (uppercase tracked) + bold title ─────────────────────
+static void renderTrackInfo() {
+    if (s_title.length() == 0 && s_artist.length() == 0) return;
+
+    // Artist — UPPERCASE small-caps with letter tracking
+    tft.setFreeFont(&FreeSans9pt7b);
+    String artistUp = s_artist;
+    artistUp.toUpperCase();
+    artistUp = fitText(artistUp, 200);
+    drawTrackedCentered(artistUp, 120, 28, COLOR_TEXT_FAINT, 2);
+
+    // Title — bold white, prominent
+    tft.setFreeFont(&FreeSansBold12pt7b);
+    tft.setTextDatum(TC_DATUM);
+    tft.setTextColor(COLOR_TEXT_HI);   // transparent bg
+    String t = fitText(s_title, 210);
+    tft.drawString(t, 120, 48);
+
+    tft.setFreeFont(NULL);
+    tft.setTextDatum(TL_DATUM);
+}
+
 void display_showTrackInfo(const String &title, const String &artist) {
     s_title  = title;
     s_artist = artist;
-
-    applyTopOverlay();
-    tft.setTextDatum(TC_DATUM);
-
-    // At y=42 the GC9A01 circle is ~210 px wide — safe for both lines
-    // Artist — Spotify green, font 1 (8 px)
-    tft.setTextFont(1);
-    String a = artist;
-    while (a.length() > 1 && tft.textWidth(a) > 180) a = a.substring(0, a.length()-1);
-    if (a.length() < artist.length()) a += "..";
-    tft.setTextColor(COLOR_BLACK);
-    tft.drawString(a, 121, 43);
-    tft.setTextColor(SPOTIFY_GREEN);
-    tft.drawString(a, 120, 42);
-
-    // Title — white, font 1 (keep narrow so it fits the circle at y~54)
-    tft.setTextFont(1);
-    String t = title;
-    while (t.length() > 1 && tft.textWidth(t) > 180) t = t.substring(0, t.length()-1);
-    if (t.length() < title.length()) t += "..";
-    tft.setTextColor(COLOR_BLACK);
-    tft.drawString(t, 121, 55);
-    tft.setTextColor(COLOR_WHITE);
-    tft.drawString(t, 120, 54);
+    renderTrackInfo();
 }
 
-// ── Lyric helpers ─────────────────────────────────────────────────────────────
-
-// Greedy word-wrap; returns number of split points (0 = fits on 1 line).
-static int findSplits(const String &text, int font, int maxW, int splits[3]) {
+// ─── Lyric helpers ───────────────────────────────────────────────────────────
+static int findSplits(const String &text, int maxW, int splits[3]) {
     splits[0] = splits[1] = splits[2] = -1;
-    tft.setTextFont(font);
     if (tft.textWidth(text) <= maxW) return 0;
     int nSplits = 0, segStart = 0, wordStart = 0, len = (int)text.length();
     for (int i = 0; i <= len; i++) {
@@ -128,31 +208,37 @@ static int findSplits(const String &text, int font, int maxW, int splits[3]) {
     return nSplits;
 }
 
-// Draw one line segment with per-word karaoke colouring.
-// Uses setCursor+print (most basic TFT_eSPI path) to avoid any datum issues.
-static void renderWords(const String &seg, int y, int font,
+// Per-word karaoke colouring on dimmed album (no pill backing).
+// Two-pass for spacing correctness:
+//   PASS 1 — full line in white (transparent bg on dimmed art)
+//   PASS 2 — over-paint past + active words
+static void renderWords(const String &seg, int y,
                         int highlightWord, int wOffset) {
-    tft.setTextFont(font);
-    tft.setTextSize(1);
+    tft.setTextDatum(TL_DATUM);
     int segW = tft.textWidth(seg);
     int x = 120 - segW / 2;
     if (x < 4) x = 4;
 
+    tft.setTextColor(COLOR_TEXT_HI);          // transparent bg
+    tft.drawString(seg, x, y);
+
     int wIdx = wOffset, start = 0, len = (int)seg.length();
+    int wx = x;
     for (int i = 0; i <= len; i++) {
         if (i == len || seg[i] == ' ') {
             if (i > start) {
                 String w = seg.substring(start, i);
-                uint16_t col = (wIdx == highlightWord) ? SPOTIFY_GREEN
-                             : (wIdx  < highlightWord) ? COLOR_WORD_PAST
-                                                       : COLOR_WHITE;
-                tft.setTextColor(col, OVERLAY_DARK);
-                tft.setCursor(x, y);
-                tft.print(w);
-                x += tft.textWidth(w);
+                bool needRecolor = (wIdx == highlightWord) || (wIdx < highlightWord);
+                if (needRecolor) {
+                    uint16_t col = (wIdx == highlightWord) ? COLOR_ACCENT
+                                                          : COLOR_WORD_PAST;
+                    tft.setTextColor(col);
+                    tft.drawString(w, wx, y);
+                }
+                wx += tft.textWidth(w);
             }
             if (i < len) {
-                x += tft.textWidth(" ");
+                wx += tft.textWidth(" ");
                 wIdx++;
             }
             start = i + 1;
@@ -160,54 +246,61 @@ static void renderWords(const String &seg, int y, int font,
     }
 }
 
-// ── Lyric display ─────────────────────────────────────────────────────────────
-//
-// clearBg=true  → wipe lyric zone with one fillRect (no JPEG redraw)
-// clearBg=false → word-colour update; just overdraw text pixels with same bg colour
-//
-// LYRIC_ZONE_Y / LYRIC_ZONE_H is the fixed full lyric+next-line band. One single
-// fillRect across this zone is the only "clear" we need for line changes — way
-// faster than re-decoding the JPEG (~50-150 ms for a 25 KB album) every line.
-#define LYRIC_ZONE_Y  74
-#define LYRIC_ZONE_H  118    // covers main lyric (y≈78-168) + next line (y≈174-190)
+static void renderArcCached();
 
+// ─── Lyric stage (no pills — text floats on dimmed art) ──────────────────────
 void display_showLyrics(const String &currentLine, const String &nextLine,
                         int highlightWord, bool clearBg) {
     if (clearBg) {
-        tft.fillRect(0, LYRIC_ZONE_Y, 240, LYRIC_ZONE_H, OVERLAY_DARK);
+        if (s_albumCacheValid && s_albumCache) {
+            tft.pushImage(0, ALBUM_CACHE_Y, 240, ALBUM_CACHE_H, s_albumCache);
+        } else if (s_albumLoaded) {
+            TJpgDec.drawJpg(0, 0, s_albumBuf, (uint32_t)s_albumLen);
+            renderTrackInfo();
+            renderArcCached();
+        } else {
+            tft.fillRect(0, ALBUM_CACHE_Y, 240, ALBUM_CACHE_H, COLOR_BLACK);
+        }
     }
 
     if (currentLine.length() == 0) {
         if (clearBg) {
-            tft.setTextFont(1);
-            tft.setTextSize(1);
-            int sw = tft.textWidth("No lyrics available");
-            tft.setTextColor(COLOR_GRAY, OVERLAY_DARK);
-            tft.setCursor(120 - sw/2, 116);
-            tft.print("No lyrics available");
+            tft.setFreeFont(&FreeSans9pt7b);
+            tft.setTextDatum(TC_DATUM);
+            tft.setTextColor(COLOR_TEXT_FAINT);
+            tft.drawString("· no lyrics ·", 120, 124);
+            tft.setFreeFont(NULL);
+            tft.setTextDatum(TL_DATUM);
         }
         return;
     }
 
-    // Font selection: font 4 (26 px) if single line fits, else font 2 (16 px)
-    int font, fontH, lineH;
-    {
-        int sp[3];
-        int ns = findSplits(currentLine, 4, 190, sp);
-        if (ns == 0) { font = 4; fontH = 26; lineH = 34; }
-        else         { font = 2; fontH = 16; lineH = 22; }
+    // ── Pick font + sizing tier ──────────────────────────────────────────────
+    int splits[3]; int nSplits, fontH, lineH;
+    const GFXfont* font;
+
+    tft.setFreeFont(&FreeSansBold12pt7b);
+    nSplits = findSplits(currentLine, 200, splits);
+    if (nSplits == 0) { font = &FreeSansBold12pt7b; fontH = 18; lineH = 26; }
+    else {
+        tft.setFreeFont(&FreeSans12pt7b);
+        nSplits = findSplits(currentLine, 204, splits);
+        if (nSplits <= 1) { font = &FreeSans12pt7b; fontH = 17; lineH = 25; }
+        else {
+            tft.setFreeFont(&FreeSans9pt7b);
+            nSplits = findSplits(currentLine, 204, splits);
+            font = &FreeSans9pt7b; fontH = 13; lineH = 19;
+        }
     }
+    tft.setFreeFont(font);
 
-    int splits[3];
-    int nSplits = findSplits(currentLine, font, 190, splits);
-    int nLines  = nSplits + 1;
-    int blockH  = (nLines - 1) * lineH + fontH;
+    int nLines = nSplits + 1;
+    int blockH = (nLines - 1) * lineH + fontH;
 
-    int startY = 120 - blockH / 2;
-    if (startY < 78)           startY = 78;
-    if (startY + blockH > 168) startY = 168 - blockH;
+    int startY = 122 - blockH / 2;
+    if (startY < 86)            startY = 86;
+    if (startY + blockH > 158)  startY = 158 - blockH;
 
-    // Build line segments and cumulative word offsets
     String parts[4];
     int    wOff[4] = {0, 0, 0, 0};
     int    from = 0;
@@ -223,35 +316,49 @@ void display_showLyrics(const String &currentLine, const String &nextLine,
     }
 
     for (int i = 0; i < nLines; i++)
-        renderWords(parts[i], startY + i * lineH, font, highlightWord, wOff[i]);
+        renderWords(parts[i], startY + i * lineH, highlightWord, wOff[i]);
 
-    // Next line — font 1, muted, at y=178 (circle is ~200 px wide there — safe)
+    // Next line — italic faint, transparent bg
     if (nextLine.length() > 0) {
-        tft.setTextFont(1);
+        tft.setFreeFont(&FreeSansOblique9pt7b);
         tft.setTextDatum(TC_DATUM);
-        String nl = nextLine;
-        while (nl.length() > 1 && tft.textWidth(nl) > 170) {
-            int sp = nl.lastIndexOf(' ');
-            nl = (sp > 0) ? nl.substring(0, sp) : nl.substring(0, nl.length()-1);
-        }
-        tft.setTextColor(COLOR_BLACK);
-        tft.drawString(nl, 121, 179);
-        tft.setTextColor(COLOR_NEXT_LINE);
+        String nl = fitText(nextLine, 200);
+        tft.setTextColor(COLOR_TEXT_FAINT);
         tft.drawString(nl, 120, 178);
+        tft.setFreeFont(NULL);
+        tft.setTextDatum(TL_DATUM);
     }
 }
 
-// ── Progress arc ──────────────────────────────────────────────────────────────
+// ─── Progress arc + accent dot at 12 o'clock ─────────────────────────────────
+//   Thin 3 px arc on the very edge, with a bright accent dot fixed at the top
+//   as the "now playing" cue (Car Thing styling).
+static void renderArcAt(int angle) {
+    uint32_t a = (uint32_t)angle;
+    if (a < 358)
+        tft.drawSmoothArc(120, 120, 119, 116, a, 360, 0x0841, 0x0000, false);
+    if (a >= 2)
+        tft.drawSmoothArc(120, 120, 119, 116, 0, a, COLOR_ACCENT, 0x0841, false);
+    // Accent dot at 12 o'clock
+    tft.fillCircle(120, 6, 3, COLOR_ACCENT);
+    tft.fillCircle(120, 6, 4, COLOR_ACCENT);   // glow ring
+    tft.fillCircle(120, 6, 2, COLOR_TEXT_HI);  // bright core
+}
+
+static void renderArcCached() {
+    if (s_lastDuration <= 0) return;
+    int angle = (int)(constrain((float)s_lastProgress / (float)s_lastDuration, 0.0f, 1.0f) * 360.0f);
+    renderArcAt(angle);
+    s_lastArcAngle = angle;
+}
+
 void display_drawProgressArc(long progressMs, long durationMs) {
+    s_lastProgress = progressMs;
+    s_lastDuration = durationMs;
     if (durationMs <= 0) return;
     int angle = (int)(constrain((float)progressMs / (float)durationMs, 0.0f, 1.0f) * 360.0f);
     if (angle == s_lastArcAngle) return;
     if (s_lastArcAngle >= 0 && abs(angle - s_lastArcAngle) < 2) return;
     s_lastArcAngle = angle;
-
-    uint32_t a = (uint32_t)angle;
-    if (a < 358)
-        tft.drawSmoothArc(120, 120, 117, 113, a, 360, 0x2104, 0x0000, false);
-    if (a >= 2)
-        tft.drawSmoothArc(120, 120, 117, 113, 0, a, SPOTIFY_GREEN, 0x2104, false);
+    renderArcAt(angle);
 }

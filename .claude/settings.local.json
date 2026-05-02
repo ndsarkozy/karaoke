@@ -3,7 +3,11 @@
     "allow": [
       "WebFetch(domain:github.com)",
       "WebFetch(domain:raw.githubusercontent.com)",
-      "WebFetch(domain:api.github.com)"
+      "WebFetch(domain:api.github.com)",
+      "Bash(where ffmpeg *)",
+      "Bash(where.exe ffmpeg *)",
+      "Bash(where.exe magick *)",
+      "PowerShell(Get-Command *)"
     ]
   }
 }
