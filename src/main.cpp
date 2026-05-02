@@ -44,6 +44,9 @@ void loop() {
 
     // ── New album art ─────────────────────────────────────────────────────────
     if (ble_newAlbumAvailable()) {
+        lyrics_clear();
+        lastLine          = -1;
+        lastHighlightWord = -1;
         display_drawAlbum(ble_getAlbumBuf(), ble_getAlbumLen());
         display_showTrackInfo(trackTitle, trackArtist);
     }
@@ -67,6 +70,11 @@ void loop() {
         lastLine          = -1;
         lastHighlightWord = -1;
         newTrackFlag      = false;
+        if (lyricCount == 0) {
+            display_showLyrics("", "", 0, true);
+            delay(50);
+            return;
+        }
     }
 
     // ── Progress arc ──────────────────────────────────────────────────────────
