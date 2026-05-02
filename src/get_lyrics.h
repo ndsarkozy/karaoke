@@ -19,5 +19,5 @@ extern String    trackTitle;
 extern String    trackArtist;
 
 void lyrics_clear();
-void lyrics_parse_ble(const String &raw);
+void lyrics_parse_ble(const char* raw);
 void lyrics_printAll();

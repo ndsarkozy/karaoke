@@ -9,7 +9,7 @@ bool   ble_newAlbumAvailable();
 long   ble_getProgressMs();
 long   ble_getDurationMs();
 bool   ble_getIsPlaying();
-String ble_getLyrics();
+const char* ble_getLyrics();   // valid until next ble_newLyricsAvailable() call
 const uint8_t* ble_getAlbumBuf();
 size_t         ble_getAlbumLen();
 void   ble_task(void* pv);

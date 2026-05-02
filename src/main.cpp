@@ -56,7 +56,7 @@ void loop() {
     // ── New lyrics ────────────────────────────────────────────────────────────
     if (ble_newLyricsAvailable()) {
         albumReceivedAt = 0;
-        lyrics_parse_ble(ble_getLyrics());
+        lyrics_parse_ble(ble_getLyrics());  // const char* — no heap copy
         display_showTrackInfo(trackTitle, trackArtist);
         newTrackFlag = true;
     }

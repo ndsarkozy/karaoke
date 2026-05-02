@@ -8,7 +8,7 @@
 #define LYRICS_CHAR_UUID    "12345678-1234-1234-1234-123456789ab2"
 #define ALBUM_CHAR_UUID     "12345678-1234-1234-1234-123456789ab3"
 
-#define ALBUM_BUF_SIZE 30000
+#define ALBUM_BUF_SIZE 26000
 
 static BLEClient*               bleClient    = nullptr;
 static BLERemoteCharacteristic* progressChar = nullptr;
@@ -23,11 +23,12 @@ static bool newAlbum             = false;
 static long   progressMs         = 0;
 static long   durationMs         = 0;
 static bool   isPlaying          = false;
-static String assembledLyrics    = "";
 
-// Lyric chunk reassembly
-static String chunkBuffer        = "";
-static int    lastChunkIndex     = -1;
+// Lyric chunk reassembly — static buffer avoids heap fragmentation
+#define LYRIC_BUF_SIZE 10240
+static char   lyricChunkBuf[LYRIC_BUF_SIZE];
+static size_t lyricAssembled  = 0;
+static int    lastChunkIndex  = -1;
 
 // Album chunk reassembly
 static uint8_t albumBuf[ALBUM_BUF_SIZE];
@@ -74,8 +75,8 @@ static void onLyricsNotify(BLERemoteCharacteristic*, uint8_t* data, size_t len, 
     hbuf[colonPos] = '\0';
     String header = String(hbuf);
 
-    String chunk  = "";
-    for (int i = colonPos+1; i < (int)len; i++) chunk += (char)data[i];
+    int    payloadStart = colonPos + 1;
+    size_t payloadLen   = (payloadStart < (int)len) ? len - payloadStart : 0;
 
     int slashPos = header.indexOf('/');
     if (slashPos < 0) return;
@@ -84,11 +85,25 @@ static void onLyricsNotify(BLERemoteCharacteristic*, uint8_t* data, size_t len, 
 
     Serial.printf("[BLE] Lyric chunk %d/%d\n", chunkIdx, total);
 
-    if (chunkIdx == 0) { chunkBuffer = chunk; lastChunkIndex = 0; }
-    else if (chunkIdx == lastChunkIndex+1) { chunkBuffer += chunk; lastChunkIndex = chunkIdx; }
-    else { chunkBuffer = ""; lastChunkIndex = -1; return; }
+    if (chunkIdx == 0) {
+        lyricAssembled = 0;
+        lastChunkIndex = 0;
+    } else if (chunkIdx == lastChunkIndex + 1) {
+        lastChunkIndex = chunkIdx;
+    } else {
+        lyricAssembled = 0; lastChunkIndex = -1; return;
+    }
 
-    if (chunkIdx == total-1) { assembledLyrics = chunkBuffer; newLyrics = true; }
+    if (payloadLen > 0 && lyricAssembled + payloadLen < LYRIC_BUF_SIZE) {
+        memcpy(lyricChunkBuf + lyricAssembled, data + payloadStart, payloadLen);
+        lyricAssembled += payloadLen;
+    }
+
+    if (chunkIdx == total - 1) {
+        lyricChunkBuf[lyricAssembled] = '\0';
+        newLyrics = true;   // main loop reads lyricChunkBuf via ble_getLyrics()
+        Serial.printf("[BLE] Lyrics assembled: %d bytes\n", (int)lyricAssembled);
+    }
 }
 
 static void onAlbumNotify(BLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
@@ -179,7 +194,7 @@ bool   ble_isConnected()     { return connected; }
 bool   ble_getIsPlaying()    { return isPlaying; }
 long   ble_getProgressMs()   { return progressMs; }
 long   ble_getDurationMs()   { return durationMs; }
-String ble_getLyrics()       { return assembledLyrics; }
+const char* ble_getLyrics()  { return lyricChunkBuf; }
 const uint8_t* ble_getAlbumBuf() { return albumBuf; }
 size_t         ble_getAlbumLen() { return albumLen;  }
 

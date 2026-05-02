@@ -19,46 +19,54 @@ void lyrics_clear() {
     }
 }
 
-void lyrics_parse_ble(const String &raw) {
+void lyrics_parse_ble(const char* raw) {
     lyrics_clear();
     trackTitle  = "";
     trackArtist = "";
-    Serial.printf("[Lyrics] Raw len=%d first100='%s'\n",
-                  raw.length(), raw.substring(0, 100).c_str());
-    int pos = 0;
-    while (pos < (int)raw.length() && lyricCount < MAX_LYRIC_LINES) {
-        int newline = raw.indexOf('\n', pos);
-        if (newline < 0) newline = raw.length();
-        String line = raw.substring(pos, newline);
-        line.trim();
+    if (!raw || !*raw) {
+        Serial.println("[Lyrics] Parsed 0 lines — empty payload");
+        return;
+    }
 
-        // TRACK: header injected by the Android app
-        if (line.startsWith("TRACK:")) {
-            int pipe = line.indexOf('|', 6);
-            if (pipe > 0) {
-                trackTitle  = line.substring(6, pipe);
-                trackArtist = line.substring(pipe + 1);
+    const char* p = raw;
+    while (*p && lyricCount < MAX_LYRIC_LINES) {
+        const char* nl = strchr(p, '\n');
+        int lineLen = nl ? (int)(nl - p) : (int)strlen(p);
+
+        // strip trailing \r
+        int end = lineLen;
+        while (end > 0 && (p[end-1] == '\r' || p[end-1] == ' ')) end--;
+
+        if (end >= 6 && strncmp(p, "TRACK:", 6) == 0) {
+            const char* pipe = (const char*)memchr(p + 6, '|', end - 6);
+            if (pipe) {
+                trackTitle  = String(p + 6, (int)(pipe - p - 6));
+                trackArtist = String(pipe + 1, (int)(p + end - pipe - 1));
                 trackTitle.trim();
                 trackArtist.trim();
             }
-            pos = newline + 1;
-            continue;
-        }
+        } else {
+            const char* pipe = (const char*)memchr(p, '|', end);
+            if (pipe && pipe > p) {
+                char msBuf[12] = {};
+                int msLen = min((int)(pipe - p), 11);
+                memcpy(msBuf, p, msLen);
+                long ms = atol(msBuf);
 
-        int pipe = line.indexOf('|');
-        if (pipe > 0) {
-            long   ms   = line.substring(0, pipe).toInt();
-            String text = line.substring(pipe + 1);
-            text.trim();
-            if (text.length() > 0) {
-                lyrics[lyricCount].timestampMs = ms;
-                lyrics[lyricCount].text        = text;
-                lyrics[lyricCount].wordOffset  = -1;
-                lyrics[lyricCount].wordCount   = 0;
-                lyricCount++;
+                const char* textStart = pipe + 1;
+                int textLen = (int)(p + end - textStart);
+                while (textLen > 0 && textStart[textLen-1] == ' ') textLen--;
+
+                if (textLen > 0) {
+                    lyrics[lyricCount].timestampMs = ms;
+                    lyrics[lyricCount].text        = String(textStart, textLen);
+                    lyrics[lyricCount].wordOffset  = -1;
+                    lyrics[lyricCount].wordCount   = 0;
+                    lyricCount++;
+                }
             }
         }
-        pos = newline + 1;
+        p = nl ? nl + 1 : p + lineLen;
     }
     Serial.printf("[Lyrics] Parsed %d lines — %s / %s\n",
                   lyricCount, trackTitle.c_str(), trackArtist.c_str());
