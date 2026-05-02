@@ -75,7 +75,7 @@ void loop() {
         newTrackFlag      = false;
         if (lyricCount == 0) {
             display_showLyrics("", "", 0, true);
-            delay(50);
+            delay(20);
             return;
         }
     }
@@ -130,5 +130,5 @@ void loop() {
         display_showLyrics(lyrics[currentLine].text, nextText, highlightWord, lineChanged);
     }
 
-    delay(50);
+    delay(20);
 }

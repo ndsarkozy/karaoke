@@ -162,28 +162,28 @@ static void renderWords(const String &seg, int y, int font,
 
 // ── Lyric display ─────────────────────────────────────────────────────────────
 //
-// clearBg=true  → redraw album art + track info to wipe old line before drawing
-// clearBg=false → word-colour update on the same line; just overdraw text pixels
+// clearBg=true  → wipe lyric zone with one fillRect (no JPEG redraw)
+// clearBg=false → word-colour update; just overdraw text pixels with same bg colour
 //
+// LYRIC_ZONE_Y / LYRIC_ZONE_H is the fixed full lyric+next-line band. One single
+// fillRect across this zone is the only "clear" we need for line changes — way
+// faster than re-decoding the JPEG (~50-150 ms for a 25 KB album) every line.
+#define LYRIC_ZONE_Y  74
+#define LYRIC_ZONE_H  118    // covers main lyric (y≈78-168) + next line (y≈174-190)
+
 void display_showLyrics(const String &currentLine, const String &nextLine,
                         int highlightWord, bool clearBg) {
     if (clearBg) {
-        if (s_albumLoaded)
-            TJpgDec.drawJpg(0, 0, s_albumBuf, (uint32_t)s_albumLen);
-        else
-            tft.fillScreen(COLOR_BLACK);
-        display_showTrackInfo(s_title, s_artist);
-        s_lastArcAngle = -1;
+        tft.fillRect(0, LYRIC_ZONE_Y, 240, LYRIC_ZONE_H, OVERLAY_DARK);
     }
 
     if (currentLine.length() == 0) {
         if (clearBg) {
-            tft.fillRect(0, 104, 240, 24, OVERLAY_DARK);
             tft.setTextFont(1);
             tft.setTextSize(1);
             int sw = tft.textWidth("No lyrics available");
             tft.setTextColor(COLOR_GRAY, OVERLAY_DARK);
-            tft.setCursor(120 - sw/2, 108);
+            tft.setCursor(120 - sw/2, 116);
             tft.print("No lyrics available");
         }
         return;
@@ -193,7 +193,6 @@ void display_showLyrics(const String &currentLine, const String &nextLine,
     int font, fontH, lineH;
     {
         int sp[3];
-        // Use 190 px max width — safe across the circle between y=80 and y=165
         int ns = findSplits(currentLine, 4, 190, sp);
         if (ns == 0) { font = 4; fontH = 26; lineH = 34; }
         else         { font = 2; fontH = 16; lineH = 22; }
@@ -204,17 +203,9 @@ void display_showLyrics(const String &currentLine, const String &nextLine,
     int nLines  = nSplits + 1;
     int blockH  = (nLines - 1) * lineH + fontH;
 
-    // True screen centre is y=120.  Lyrics centred there, bounded so they
-    // don't overlap the info bar (y<78) or the next-line area (y>168).
     int startY = 120 - blockH / 2;
-    if (startY < 78)          startY = 78;
+    if (startY < 78)           startY = 78;
     if (startY + blockH > 168) startY = 168 - blockH;
-
-    Serial.printf("[Lyric] font=%d nLines=%d blockH=%d startY=%d text='%s'\n",
-                  font, nLines, blockH, startY, currentLine.c_str());
-
-    // Dark band behind lyrics so text is always readable over any album art
-    tft.fillRect(0, startY - 4, 240, blockH + 8, OVERLAY_DARK);
 
     // Build line segments and cumulative word offsets
     String parts[4];
