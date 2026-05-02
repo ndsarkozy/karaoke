@@ -6,21 +6,35 @@
 #define SERVICE_UUID        "12345678-1234-1234-1234-123456789abc"
 #define PROGRESS_CHAR_UUID  "12345678-1234-1234-1234-123456789ab1"
 #define LYRICS_CHAR_UUID    "12345678-1234-1234-1234-123456789ab2"
+#define ALBUM_CHAR_UUID     "12345678-1234-1234-1234-123456789ab3"
+
+#define ALBUM_BUF_SIZE 30000
 
 static BLEClient*               bleClient    = nullptr;
 static BLERemoteCharacteristic* progressChar = nullptr;
 static BLERemoteCharacteristic* lyricsChar   = nullptr;
+static BLERemoteCharacteristic* albumChar    = nullptr;
+
 static volatile bool connected   = false;
 static bool newLyrics            = false;
 static bool newProgress          = false;
+static bool newAlbum             = false;
 
 static long   progressMs         = 0;
+static long   durationMs         = 0;
 static bool   isPlaying          = false;
 static String assembledLyrics    = "";
 
+// Lyric chunk reassembly
 static String chunkBuffer        = "";
 static int    lastChunkIndex     = -1;
-static int    totalChunks        = 0;
+
+// Album chunk reassembly
+static uint8_t albumBuf[ALBUM_BUF_SIZE];
+static size_t  albumLen          = 0;
+static uint8_t albumChunkBuf[ALBUM_BUF_SIZE];
+static size_t  albumAssembled    = 0;
+static int     albumLastChunk    = -1;
 
 class ClientCallbacks : public BLEClientCallbacks {
     void onConnect(BLEClient*) override {
@@ -28,62 +42,91 @@ class ClientCallbacks : public BLEClientCallbacks {
         Serial.println("[BLE] Connected");
     }
     void onDisconnect(BLEClient*) override {
-        connected = false;
+        connected    = false;
         progressChar = nullptr;
         lyricsChar   = nullptr;
+        albumChar    = nullptr;
         Serial.println("[BLE] Disconnected");
     }
 };
 static ClientCallbacks clientCallbacks;
 
+// ── Notification callbacks ────────────────────────────────────────────────────
 static void onProgressNotify(BLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
     if (len < 9) return;
     isPlaying  = data[0] == 1;
     progressMs = 0;
-    for (int i = 0; i < 8; i++) progressMs |= ((long)data[i + 1] << (i * 8));
+    for (int i = 0; i < 8; i++) progressMs |= ((long)data[i+1] << (i*8));
+    if (len >= 17) {
+        durationMs = 0;
+        for (int i = 0; i < 8; i++) durationMs |= ((long)data[i+9] << (i*8));
+    }
     newProgress = true;
 }
 
 static void onLyricsNotify(BLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
     int colonPos = -1;
-    for (int i = 0; i < (int)len; i++) {
-        if (data[i] == ':') { colonPos = i; break; }
-    }
+    for (int i = 0; i < (int)len; i++) { if (data[i] == ':') { colonPos = i; break; } }
     if (colonPos < 0) return;
 
     String header = String((char*)data).substring(0, colonPos);
     String chunk  = "";
-    for (int i = colonPos + 1; i < (int)len; i++) chunk += (char)data[i];
+    for (int i = colonPos+1; i < (int)len; i++) chunk += (char)data[i];
 
     int slashPos = header.indexOf('/');
     if (slashPos < 0) return;
-
     int chunkIdx = header.substring(0, slashPos).toInt();
-    int total    = header.substring(slashPos + 1).toInt();
+    int total    = header.substring(slashPos+1).toInt();
 
-    Serial.printf("[BLE] Chunk %d/%d len=%d\n", chunkIdx, total, (int)chunk.length());
+    Serial.printf("[BLE] Lyric chunk %d/%d\n", chunkIdx, total);
+
+    if (chunkIdx == 0) { chunkBuffer = chunk; lastChunkIndex = 0; }
+    else if (chunkIdx == lastChunkIndex+1) { chunkBuffer += chunk; lastChunkIndex = chunkIdx; }
+    else { chunkBuffer = ""; lastChunkIndex = -1; return; }
+
+    if (chunkIdx == total-1) { assembledLyrics = chunkBuffer; newLyrics = true; }
+}
+
+static void onAlbumNotify(BLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
+    // Header: "chunkIdx/total:" then raw JPEG bytes
+    int colonPos = -1;
+    for (int i = 0; i < (int)len && i < 20; i++) { if (data[i] == ':') { colonPos = i; break; } }
+    if (colonPos < 0) return;
+
+    String header   = String((char*)data).substring(0, colonPos);
+    int    payloadStart = colonPos + 1;
+    size_t payloadLen   = len - payloadStart;
+
+    int slashPos = header.indexOf('/');
+    if (slashPos < 0) return;
+    int chunkIdx = header.substring(0, slashPos).toInt();
+    int total    = header.substring(slashPos+1).toInt();
+
+    Serial.printf("[BLE] Album chunk %d/%d (%d bytes)\n", chunkIdx, total, (int)payloadLen);
 
     if (chunkIdx == 0) {
-        chunkBuffer    = chunk;
-        totalChunks    = total;
-        lastChunkIndex = 0;
-    } else if (chunkIdx == lastChunkIndex + 1) {
-        chunkBuffer   += chunk;
-        lastChunkIndex = chunkIdx;
+        albumAssembled = 0;
+        albumLastChunk = 0;
+    } else if (chunkIdx != albumLastChunk+1) {
+        albumAssembled = 0; albumLastChunk = -1; return;
     } else {
-        Serial.println("[BLE] Out of order chunk, resetting");
-        chunkBuffer    = "";
-        lastChunkIndex = -1;
-        return;
+        albumLastChunk = chunkIdx;
     }
 
-    if (chunkIdx == total - 1) {
-        Serial.printf("[BLE] All chunks received, total length=%d\n", chunkBuffer.length());
-        assembledLyrics = chunkBuffer;
-        newLyrics       = true;
+    if (albumAssembled + payloadLen <= ALBUM_BUF_SIZE) {
+        memcpy(albumChunkBuf + albumAssembled, data + payloadStart, payloadLen);
+        albumAssembled += payloadLen;
+    }
+
+    if (chunkIdx == total-1) {
+        memcpy(albumBuf, albumChunkBuf, albumAssembled);
+        albumLen = albumAssembled;
+        newAlbum = true;
+        Serial.printf("[BLE] Album assembled: %d bytes\n", (int)albumLen);
     }
 }
 
+// ── Connection ────────────────────────────────────────────────────────────────
 static bool connectToServer() {
     BLEScan* scan = BLEDevice::getScan();
     scan->setActiveScan(true);
@@ -93,25 +136,16 @@ static bool connectToServer() {
     for (int i = 0; i < results.getCount(); i++) {
         BLEAdvertisedDevice d = results.getDevice(i);
         if (d.haveServiceUUID() && d.isAdvertisingService(BLEUUID(SERVICE_UUID))) {
-            target = new BLEAdvertisedDevice(d);
-            break;
+            target = new BLEAdvertisedDevice(d); break;
         }
     }
     if (!target) return false;
 
-    if (bleClient) {
-        bleClient->disconnect();
-        bleClient = nullptr;
-    }
-
+    if (bleClient) { bleClient->disconnect(); bleClient = nullptr; }
     bleClient = BLEDevice::createClient();
     bleClient->setClientCallbacks(&clientCallbacks);
 
-    if (!bleClient->connect(target)) {
-        delete target;
-        return false;
-    }
-
+    if (!bleClient->connect(target)) { delete target; return false; }
     bleClient->setMTU(512);
     delay(500);
 
@@ -120,39 +154,38 @@ static bool connectToServer() {
 
     progressChar = svc->getCharacteristic(PROGRESS_CHAR_UUID);
     lyricsChar   = svc->getCharacteristic(LYRICS_CHAR_UUID);
+    albumChar    = svc->getCharacteristic(ALBUM_CHAR_UUID);
 
-    if (!progressChar || !lyricsChar) {
-        bleClient->disconnect();
-        delete target;
-        return false;
-    }
+    if (!progressChar || !lyricsChar) { bleClient->disconnect(); delete target; return false; }
 
     progressChar->registerForNotify(onProgressNotify);
     lyricsChar->registerForNotify(onLyricsNotify);
+    if (albumChar) albumChar->registerForNotify(onAlbumNotify);
 
     delete target;
     return true;
 }
 
-void ble_init() {
-    BLEDevice::init("KaraokeESP");
-}
+// ── Public API ────────────────────────────────────────────────────────────────
+void   ble_init()            { BLEDevice::init("KaraokeESP"); }
+bool   ble_isConnected()     { return connected; }
+bool   ble_getIsPlaying()    { return isPlaying; }
+long   ble_getProgressMs()   { return progressMs; }
+long   ble_getDurationMs()   { return durationMs; }
+String ble_getLyrics()       { return assembledLyrics; }
+const uint8_t* ble_getAlbumBuf() { return albumBuf; }
+size_t         ble_getAlbumLen() { return albumLen;  }
 
-bool ble_isConnected()         { return connected; }
 bool ble_newLyricsAvailable()  { if (newLyrics)   { newLyrics   = false; return true; } return false; }
 bool ble_newProgressAvailable(){ if (newProgress) { newProgress = false; return true; } return false; }
-long   ble_getProgressMs()     { return progressMs; }
-bool   ble_getIsPlaying()      { return isPlaying; }
-String ble_getLyrics()         { return assembledLyrics; }
+bool ble_newAlbumAvailable()   { if (newAlbum)    { newAlbum    = false; return true; } return false; }
 
 void ble_task(void*) {
     ble_init();
     while (true) {
         if (!connected) {
             Serial.println("[BLE] Scanning...");
-            if (!connectToServer()) {
-                vTaskDelay(pdMS_TO_TICKS(3000));
-            }
+            if (!connectToServer()) vTaskDelay(pdMS_TO_TICKS(3000));
         }
         vTaskDelay(pdMS_TO_TICKS(100));
     }

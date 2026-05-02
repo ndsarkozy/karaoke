@@ -8,6 +8,7 @@
 #include "module_test.h"
 
 static volatile long          progressAnchor = 0;
+static volatile long          durationAnchor = 0;
 static volatile unsigned long milliAnchor    = 0;
 static volatile bool          isPlaying      = false;
 static volatile bool          newTrackFlag   = false;
@@ -26,7 +27,8 @@ void setup() {
 
     display_init();
     display_showMessage("Waiting for", "phone...", COLOR_WHITE);
-  xTaskCreatePinnedToCore(ble_task, "ble", 16384, NULL, 1, NULL, 0);}
+    xTaskCreatePinnedToCore(ble_task, "ble", 16384, NULL, 1, NULL, 0);
+}
 
 void loop() {
 #ifdef DISPLAY_TEST
@@ -40,24 +42,42 @@ void loop() {
         return;
     }
 
+    // ── New album art ─────────────────────────────────────────────────────────
+    if (ble_newAlbumAvailable()) {
+        display_drawAlbum(ble_getAlbumBuf(), ble_getAlbumLen());
+        display_showTrackInfo(trackTitle, trackArtist);
+    }
+
+    // ── New lyrics ────────────────────────────────────────────────────────────
     if (ble_newLyricsAvailable()) {
         lyrics_parse_ble(ble_getLyrics());
+        display_showTrackInfo(trackTitle, trackArtist);
         newTrackFlag = true;
     }
 
+    // ── Progress update ───────────────────────────────────────────────────────
     if (ble_newProgressAvailable()) {
         progressAnchor = ble_getProgressMs() + 250;
+        durationAnchor = ble_getDurationMs();
         milliAnchor    = millis();
         isPlaying      = ble_getIsPlaying();
     }
 
     if (newTrackFlag) {
-        display_clear();
         lastLine          = -1;
         lastHighlightWord = -1;
         newTrackFlag      = false;
     }
 
+    // ── Progress arc ──────────────────────────────────────────────────────────
+    if (durationAnchor > 0) {
+        long est = isPlaying
+            ? progressAnchor + (long)(millis() - milliAnchor)
+            : progressAnchor;
+        display_drawProgressArc(est, durationAnchor);
+    }
+
+    // ── Lyric sync ────────────────────────────────────────────────────────────
     if (lyricCount == 0) { delay(50); return; }
 
     long estimated = isPlaying
@@ -66,34 +86,30 @@ void loop() {
 
     int lineIndices[2];
     sync_getDisplayLines(estimated, lineIndices, 2);
-
     int currentLine = lineIndices[0];
     if (currentLine < 0) { delay(50); return; }
 
     int highlightWord = sync_getCurrentWord(estimated, currentLine);
-
     if (highlightWord < 0) {
         long lineStart = lyrics[currentLine].timestampMs;
         long lineEnd   = (currentLine + 1 < lyricCount)
-            ? lyrics[currentLine + 1].timestampMs
-            : lineStart + 4000;
+            ? lyrics[currentLine+1].timestampMs : lineStart + 4000;
         long elapsed  = estimated - lineStart;
         long duration = max(lineEnd - lineStart, 1L);
-        int wc = 1;
+        int  wc = 1;
         for (int i = 0; i < (int)lyrics[currentLine].text.length(); i++)
             if (lyrics[currentLine].text[i] == ' ') wc++;
-        highlightWord = constrain((int)((float)elapsed / duration * wc), 0, wc - 1);
+        highlightWord = constrain((int)((float)elapsed / duration * wc), 0, wc-1);
     }
 
-    bool lineChanged = (currentLine != lastLine);
+    bool lineChanged = (currentLine  != lastLine);
     bool wordChanged = (highlightWord != lastHighlightWord);
 
     if (lineChanged) lastLine = currentLine;
-
     if (lineChanged || wordChanged) {
         lastHighlightWord = highlightWord;
         String nextText = (lineIndices[1] >= 0) ? lyrics[lineIndices[1]].text : "";
-        display_showLyrics(lyrics[currentLine].text, nextText, highlightWord);
+        display_showLyrics(lyrics[currentLine].text, nextText, highlightWord, lineChanged);
     }
 
     delay(50);
