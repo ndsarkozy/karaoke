@@ -9,7 +9,7 @@ String    trackTitle          = "";
 String    trackArtist         = "";
 
 void lyrics_clear() {
-    lyricCount        = 0;
+    lyricCount         = 0;
     wordTimestampCount = 0;
     for (int i = 0; i < MAX_LYRIC_LINES; i++) {
         lyrics[i].timestampMs = 0;
@@ -21,6 +21,10 @@ void lyrics_clear() {
 
 void lyrics_parse_ble(const String &raw) {
     lyrics_clear();
+    trackTitle  = "";
+    trackArtist = "";
+    Serial.printf("[Lyrics] Raw len=%d first100='%s'\n",
+                  raw.length(), raw.substring(0, 100).c_str());
     int pos = 0;
     while (pos < (int)raw.length() && lyricCount < MAX_LYRIC_LINES) {
         int newline = raw.indexOf('\n', pos);

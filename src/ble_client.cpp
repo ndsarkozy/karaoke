@@ -67,9 +67,13 @@ static void onProgressNotify(BLERemoteCharacteristic*, uint8_t* data, size_t len
 static void onLyricsNotify(BLERemoteCharacteristic*, uint8_t* data, size_t len, bool) {
     int colonPos = -1;
     for (int i = 0; i < (int)len; i++) { if (data[i] == ':') { colonPos = i; break; } }
-    if (colonPos < 0) return;
+    if (colonPos < 0 || colonPos >= 20) return;
 
-    String header = String((char*)data).substring(0, colonPos);
+    char hbuf[21];
+    memcpy(hbuf, data, colonPos);
+    hbuf[colonPos] = '\0';
+    String header = String(hbuf);
+
     String chunk  = "";
     for (int i = colonPos+1; i < (int)len; i++) chunk += (char)data[i];
 
@@ -93,7 +97,10 @@ static void onAlbumNotify(BLERemoteCharacteristic*, uint8_t* data, size_t len, b
     for (int i = 0; i < (int)len && i < 20; i++) { if (data[i] == ':') { colonPos = i; break; } }
     if (colonPos < 0) return;
 
-    String header   = String((char*)data).substring(0, colonPos);
+    char hbuf[21];
+    memcpy(hbuf, data, colonPos);
+    hbuf[colonPos] = '\0';
+    String header   = String(hbuf);
     int    payloadStart = colonPos + 1;
     size_t payloadLen   = len - payloadStart;
 

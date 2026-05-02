@@ -13,8 +13,9 @@ static volatile unsigned long milliAnchor    = 0;
 static volatile bool          isPlaying      = false;
 static volatile bool          newTrackFlag   = false;
 
-static int lastLine          = -1;
-static int lastHighlightWord = -1;
+static int           lastLine            = -1;
+static int           lastHighlightWord   = -1;
+static unsigned long albumReceivedAt     = 0;   // millis() when last album arrived; 0 = no pending timeout
 
 void setup() {
     Serial.begin(115200);
@@ -47,12 +48,14 @@ void loop() {
         lyrics_clear();
         lastLine          = -1;
         lastHighlightWord = -1;
+        albumReceivedAt   = millis();
         display_drawAlbum(ble_getAlbumBuf(), ble_getAlbumLen());
         display_showTrackInfo(trackTitle, trackArtist);
     }
 
     // ── New lyrics ────────────────────────────────────────────────────────────
     if (ble_newLyricsAvailable()) {
+        albumReceivedAt = 0;
         lyrics_parse_ble(ble_getLyrics());
         display_showTrackInfo(trackTitle, trackArtist);
         newTrackFlag = true;
@@ -83,6 +86,13 @@ void loop() {
             ? progressAnchor + (long)(millis() - milliAnchor)
             : progressAnchor;
         display_drawProgressArc(est, durationAnchor);
+    }
+
+    // ── No-lyrics timeout: show indicator if album arrived but lyrics never came ─
+    if (albumReceivedAt > 0 && millis() - albumReceivedAt > 5000) {
+        albumReceivedAt = 0;
+        Serial.println("[Lyrics] Timeout — no lyrics received after album");
+        display_showLyrics("", "", 0, true);
     }
 
     // ── Lyric sync ────────────────────────────────────────────────────────────

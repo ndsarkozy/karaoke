@@ -176,7 +176,18 @@ void display_showLyrics(const String &currentLine, const String &nextLine,
         s_lastArcAngle = -1;
     }
 
-    if (currentLine.length() == 0) return;
+    if (currentLine.length() == 0) {
+        if (clearBg) {
+            tft.fillRect(0, 104, 240, 24, OVERLAY_DARK);
+            tft.setTextFont(1);
+            tft.setTextSize(1);
+            int sw = tft.textWidth("No lyrics available");
+            tft.setTextColor(COLOR_GRAY, OVERLAY_DARK);
+            tft.setCursor(120 - sw/2, 108);
+            tft.print("No lyrics available");
+        }
+        return;
+    }
 
     // Font selection: font 4 (26 px) if single line fits, else font 2 (16 px)
     int font, fontH, lineH;
