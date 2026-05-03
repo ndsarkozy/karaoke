@@ -7,48 +7,49 @@
 static TFT_eSPI tft = TFT_eSPI();
 
 // ─── Cached state ────────────────────────────────────────────────────────────
-static const uint8_t* s_albumBuf      = nullptr;
-static size_t         s_albumLen      = 0;
-static bool           s_albumLoaded   = false;
-static int            s_lastArcAngle  = -1;
-static long           s_lastProgress  = 0;
-static long           s_lastDuration  = 0;
+static int   s_lastArcAngle  = -1;
+static long  s_lastProgress  = 0;
+static long  s_lastDuration  = 0;
 
 static String s_title  = "";
 static String s_artist = "";
 
-// ─── Album cache (post-dim) ──────────────────────────────────────────────────
-// Captures the *dimmed* decoded album rows once at album-load. On line change
-// we pushImage the cached pixels back to wipe old text without re-decoding.
-#define ALBUM_CACHE_Y     76
-#define ALBUM_CACHE_H     124
-static uint16_t* s_albumCache       = nullptr;
-static bool      s_albumCacheValid  = false;
-static bool      s_capturingAlbum   = false;
+// ─── Album cache (full-color) ────────────────────────────────────────────────
+// Captures the decoded album rows when an album arrives. On every subsequent
+// lyric repaint we pushImage these cached pixels back — the JPEG is never
+// decoded a second time, so we never read the BLE buffer after the initial
+// decode (kills the read-during-write race that was causing jumbled images).
+//
+// Two caches:
+//   • s_albumCache (static BSS) covers the current-line strike zone y∈[86,158]
+//     — must always exist, so it lives in BSS.
+//   • s_albumCacheLower (heap, lazy) covers the next-line italic strip
+//     y∈[158,200] — lazy heap alloc avoids the BSS overflow at link time
+//     and the BT-startup heap starvation that bit us at boot.
+// Together they cover y=86..200 with no black gap, so lyric text overlays
+// the full-color album with no visible black rectangles.
+#define ALBUM_CACHE_Y      86
+#define ALBUM_CACHE_H      72
+#define ALBUM_LOWER_Y     158
+#define ALBUM_LOWER_H      42
+static uint16_t  s_albumCache[240 * ALBUM_CACHE_H];   // 240 × 72 × 2 = 34 560 B BSS
+static uint16_t* s_albumCacheLower = nullptr;          // 240 × 42 × 2 = 20 160 B heap
+static bool      s_albumCacheValid = false;
+static bool      s_capturingAlbum  = false;
 
-// Dim factor for album backdrop (Car Thing aesthetic — art is a textured
-// background, not the focus). Halves each RGB565 channel via mask + shift.
-//   shift=1 → ~50% brightness
-//   shift=2 → ~25% brightness (more dramatic)
-#define DIM_HALVE(c)   (((c) >> 1) & 0x7BEF)
-#define DIM_QUARTER(c) (((c) >> 2) & 0x39E7)
-
-// ─── JPEG callback: dim each block in place, push, then capture to cache ────
+// ─── JPEG callback: push full-color block, capture to both caches ───────────
+// No dim transform — the album shows in full color and lyric legibility is
+// handled by per-glyph outlining at draw time.
 static bool jpegOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* bm) {
     int16_t x1 = max(x, (int16_t)0), y1 = max(y, (int16_t)0);
     int16_t x2 = min((int16_t)(x + w), (int16_t)240);
     int16_t y2 = min((int16_t)(y + h), (int16_t)240);
     if (x1 >= x2 || y1 >= y2) return true;
 
-    // Dim every pixel of this block in place. Halve once (50%), then again on
-    // top-half of screen to fade title area more — matches Car Thing's heavier
-    // dim toward the top where artist/title sit.
-    int blockN = w * h;
-    for (int i = 0; i < blockN; i++) bm[i] = DIM_HALVE(bm[i]);
-
     tft.pushImage(x1, y1, x2-x1, y2-y1, bm + (y1-y)*w + (x1-x));
 
-    if (s_capturingAlbum && s_albumCache) {
+    if (s_capturingAlbum) {
+        // Upper strip (current-line zone) into static BSS cache.
         int16_t cy1 = max(y1, (int16_t)ALBUM_CACHE_Y);
         int16_t cy2 = min(y2, (int16_t)(ALBUM_CACHE_Y + ALBUM_CACHE_H));
         for (int row = cy1; row < cy2; row++) {
@@ -57,6 +58,18 @@ static bool jpegOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* b
             memcpy(&s_albumCache[dstRow * 240 + x1],
                    bm + srcRow * w + (x1 - x),
                    (x2 - x1) * sizeof(uint16_t));
+        }
+        // Lower strip (next-line italic zone) into heap cache, if reserved.
+        if (s_albumCacheLower) {
+            int16_t ly1 = max(y1, (int16_t)ALBUM_LOWER_Y);
+            int16_t ly2 = min(y2, (int16_t)(ALBUM_LOWER_Y + ALBUM_LOWER_H));
+            for (int row = ly1; row < ly2; row++) {
+                int srcRow = row - y;
+                int dstRow = row - ALBUM_LOWER_Y;
+                memcpy(&s_albumCacheLower[dstRow * 240 + x1],
+                       bm + srcRow * w + (x1 - x),
+                       (x2 - x1) * sizeof(uint16_t));
+            }
         }
     }
     return true;
@@ -77,7 +90,7 @@ void display_init() {
 }
 
 void display_fill(uint16_t c)   { tft.fillScreen(c); }
-void display_clear()            { tft.fillScreen(COLOR_BLACK); s_albumLoaded = false; s_lastArcAngle = -1; }
+void display_clear()            { tft.fillScreen(COLOR_BLACK); s_albumCacheValid = false; s_lastArcAngle = -1; }
 void display_drawCircle(int x, int y, int r, uint16_t c) { tft.drawCircle(x,y,r,c); }
 void display_fillCircle(int x, int y, int r, uint16_t c) { tft.fillCircle(x,y,r,c); }
 void display_brightness(uint8_t v) { analogWrite(TFT_BL, v); }
@@ -110,23 +123,52 @@ void display_showMessage(const String &l1, const String &l2, uint16_t color) {
 }
 
 // ─── Album art ───────────────────────────────────────────────────────────────
+// Decode the JPEG to the screen. We query the JPEG's real dimensions first,
+// pick the smallest TJpgDec scale that makes it fit inside 240×240, and
+// center the decoded image. Without this, JPEGs that aren't exactly 240×240
+// either overflow (large) or only fill the top-left (small).
+//
+// As blocks go by, snapshot the lyric-strike-zone rows into the static
+// cache. After this returns the caller may release/overwrite `buf` — we
+// never read it again.
 bool display_drawAlbum(const uint8_t* buf, size_t len) {
     if (!buf || len == 0) return false;
 
-    if (!s_albumCache) {
-        s_albumCache = (uint16_t*)malloc(240 * ALBUM_CACHE_H * sizeof(uint16_t));
-        Serial.printf("[Display] Album cache alloc %s (free heap=%u)\n",
-                      s_albumCache ? "ok" : "FAIL", (unsigned)ESP.getFreeHeap());
+    // Query source size so we can pick a scale.
+    uint16_t srcW = 0, srcH = 0;
+    if (TJpgDec.getJpgSize(&srcW, &srcH, buf, (uint32_t)len) != JDR_OK ||
+        srcW == 0 || srcH == 0) {
+        Serial.println("[Display] JPEG size probe failed");
+        return false;
     }
 
-    s_capturingAlbum = (s_albumCache != nullptr);
-    JRESULT res = TJpgDec.drawJpg(0, 0, buf, (uint32_t)len);
-    s_capturingAlbum = false;
-    if (res != JDR_OK) { s_albumCacheValid = false; return false; }
-    s_albumBuf        = buf;
-    s_albumLen        = len;
-    s_albumLoaded     = true;
-    s_albumCacheValid = (s_albumCache != nullptr);
+    // Pick the smallest scale (1, 2, 4, 8) that makes the image fit.
+    uint8_t scale = 1;
+    while (scale < 8 && (srcW / scale > 240 || srcH / scale > 240)) scale <<= 1;
+    TJpgDec.setJpgScale(scale);
+
+    int dispW = srcW / scale;
+    int dispH = srcH / scale;
+    int offX  = (240 - dispW) / 2;
+    int offY  = (240 - dispH) / 2;
+
+    Serial.printf("[Display] Album: src=%ux%u scale=%u → %dx%d at (%d,%d)\n",
+                  srcW, srcH, scale, dispW, dispH, offX, offY);
+
+    // Wipe the screen first so undersized images don't leave old pixels in
+    // the borders.
+    tft.fillScreen(COLOR_BLACK);
+
+    s_albumCacheValid = false;
+    s_capturingAlbum  = true;
+    JRESULT res = TJpgDec.drawJpg(offX, offY, buf, (uint32_t)len);
+    s_capturingAlbum  = false;
+
+    if (res != JDR_OK) {
+        Serial.printf("[Display] JPEG decode failed (%d)\n", (int)res);
+        return false;
+    }
+    s_albumCacheValid = true;
     s_lastArcAngle    = -1;
     return true;
 }
@@ -252,15 +294,19 @@ static void renderArcCached();
 void display_showLyrics(const String &currentLine, const String &nextLine,
                         int highlightWord, bool clearBg) {
     if (clearBg) {
-        if (s_albumCacheValid && s_albumCache) {
+        // Single source of truth for the lyric backdrop: the cached dimmed
+        // album rows. No JPEG re-decode path — that used to read the BLE
+        // buffer concurrently with the BLE callback writing into it.
+        if (s_albumCacheValid) {
             tft.pushImage(0, ALBUM_CACHE_Y, 240, ALBUM_CACHE_H, s_albumCache);
-        } else if (s_albumLoaded) {
-            TJpgDec.drawJpg(0, 0, s_albumBuf, (uint32_t)s_albumLen);
-            renderTrackInfo();
-            renderArcCached();
         } else {
             tft.fillRect(0, ALBUM_CACHE_Y, 240, ALBUM_CACHE_H, COLOR_BLACK);
         }
+        // Cache stops at y = ALBUM_CACHE_Y + ALBUM_CACHE_H (= 158). The
+        // next-line italic sits below at y≈178, so wipe that strip to black
+        // to clear the previous frame's text.
+        tft.fillRect(0, ALBUM_CACHE_Y + ALBUM_CACHE_H, 240,
+                     200 - (ALBUM_CACHE_Y + ALBUM_CACHE_H), COLOR_BLACK);
     }
 
     if (currentLine.length() == 0) {

@@ -12,4 +12,6 @@ bool   ble_getIsPlaying();
 const char* ble_getLyrics();   // valid until next ble_newLyricsAvailable() call
 const uint8_t* ble_getAlbumBuf();
 size_t         ble_getAlbumLen();
+void           ble_lockAlbum();    // hold while reading albumBuf — blocks notify writes
+void           ble_unlockAlbum();
 void   ble_task(void* pv);

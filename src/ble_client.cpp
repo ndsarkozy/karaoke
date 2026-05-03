@@ -30,12 +30,16 @@ static char   lyricChunkBuf[LYRIC_BUF_SIZE];
 static size_t lyricAssembled  = 0;
 static int    lastChunkIndex  = -1;
 
-// Album chunk reassembly
+// Album chunk reassembly — single buffer (chunks land directly here).
+// `albumLen` is only published on the last chunk, so consumers reading
+// (albumBuf, albumLen) never see a partial image. Main task must call
+// ble_lockAlbum() while it's reading albumBuf so the BLE callback can't
+// overwrite mid-decode.
 static uint8_t albumBuf[ALBUM_BUF_SIZE];
 static size_t  albumLen          = 0;
-static uint8_t albumChunkBuf[ALBUM_BUF_SIZE];
 static size_t  albumAssembled    = 0;
 static int     albumLastChunk    = -1;
+static volatile bool albumLocked = false;
 
 class ClientCallbacks : public BLEClientCallbacks {
     void onConnect(BLEClient*) override {
@@ -126,6 +130,14 @@ static void onAlbumNotify(BLERemoteCharacteristic*, uint8_t* data, size_t len, b
 
     Serial.printf("[BLE] Album chunk %d/%d (%d bytes)\n", chunkIdx, total, (int)payloadLen);
 
+    // Drop any new transfer while the main task is decoding the current one.
+    // Sender will retry on the next track-change. Without this, the JPEG
+    // bytes get clobbered mid-decode and the image renders jumbled.
+    if (albumLocked) {
+        if (chunkIdx == 0) albumLastChunk = -1;
+        return;
+    }
+
     if (chunkIdx == 0) {
         albumAssembled = 0;
         albumLastChunk = 0;
@@ -136,12 +148,11 @@ static void onAlbumNotify(BLERemoteCharacteristic*, uint8_t* data, size_t len, b
     }
 
     if (albumAssembled + payloadLen <= ALBUM_BUF_SIZE) {
-        memcpy(albumChunkBuf + albumAssembled, data + payloadStart, payloadLen);
+        memcpy(albumBuf + albumAssembled, data + payloadStart, payloadLen);
         albumAssembled += payloadLen;
     }
 
     if (chunkIdx == total-1) {
-        memcpy(albumBuf, albumChunkBuf, albumAssembled);
         albumLen = albumAssembled;
         newAlbum = true;
         Serial.printf("[BLE] Album assembled: %d bytes\n", (int)albumLen);
@@ -197,6 +208,8 @@ long   ble_getDurationMs()   { return durationMs; }
 const char* ble_getLyrics()  { return lyricChunkBuf; }
 const uint8_t* ble_getAlbumBuf() { return albumBuf; }
 size_t         ble_getAlbumLen() { return albumLen;  }
+void           ble_lockAlbum()   { albumLocked = true;  }
+void           ble_unlockAlbum() { albumLocked = false; }
 
 bool ble_newLyricsAvailable()  { if (newLyrics)   { newLyrics   = false; return true; } return false; }
 bool ble_newProgressAvailable(){ if (newProgress) { newProgress = false; return true; } return false; }

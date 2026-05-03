@@ -49,7 +49,10 @@ void loop() {
         lastLine          = -1;
         lastHighlightWord = -1;
         albumReceivedAt   = millis();
+        // Lock so the BLE callback can't overwrite albumBuf while we decode.
+        ble_lockAlbum();
         display_drawAlbum(ble_getAlbumBuf(), ble_getAlbumLen());
+        ble_unlockAlbum();
         display_showTrackInfo(trackTitle, trackArtist);
     }
 
