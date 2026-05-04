@@ -207,41 +207,52 @@ static int findSplits(const String &text, int maxW, int splits[3]) {
     return nSplits;
 }
 
-// Per-word karaoke colouring on dimmed album (no pill backing).
-// Two-pass for spacing correctness:
-//   PASS 1 — full line in white (transparent bg on dimmed art)
-//   PASS 2 — over-paint past + active words
+// Per-word karaoke colouring. Each word is drawn once in its final colour
+// and the cursor advances by drawString's returned width plus an explicit
+// space gap. We compute the line width from the same parts we draw, so
+// centering and per-word x positions stay byte-exact with the rendered text.
+//
+// The space gap is forced to a sensible minimum: some FreeFonts ship with
+// zero xAdvance on ' ', which would otherwise jam every word together.
 static void renderWords(const String &seg, int y,
                         int highlightWord, int wOffset) {
     tft.setTextDatum(TL_DATUM);
-    int segW = tft.textWidth(seg);
-    int x = 120 - segW / 2;
-    if (x < 4) x = 4;
 
-    tft.setTextColor(COLOR_TEXT_HI);          // transparent bg
-    tft.drawString(seg, x, y);
-
-    int wIdx = wOffset, start = 0, len = (int)seg.length();
-    int wx = x;
+    // Split into words first.
+    String words[16];
+    int    nWords = 0;
+    int    s = 0, len = (int)seg.length();
     for (int i = 0; i <= len; i++) {
         if (i == len || seg[i] == ' ') {
-            if (i > start) {
-                String w = seg.substring(start, i);
-                bool needRecolor = (wIdx == highlightWord) || (wIdx < highlightWord);
-                if (needRecolor) {
-                    uint16_t col = (wIdx == highlightWord) ? COLOR_ACCENT
-                                                          : COLOR_WORD_PAST;
-                    tft.setTextColor(col);
-                    tft.drawString(w, wx, y);
-                }
-                wx += tft.textWidth(w);
-            }
-            if (i < len) {
-                wx += tft.textWidth(" ");
-                wIdx++;
-            }
-            start = i + 1;
+            if (i > s && nWords < 16) words[nWords++] = seg.substring(s, i);
+            s = i + 1;
         }
+    }
+    if (nWords == 0) return;
+
+    int spaceW = tft.textWidth(" ");
+    if (spaceW < 4) spaceW = max(tft.textWidth("n") / 2, 4);
+
+    int totalW = 0;
+    int wW[16];
+    for (int i = 0; i < nWords; i++) {
+        wW[i]   = tft.textWidth(words[i]);
+        totalW += wW[i];
+    }
+    totalW += spaceW * (nWords - 1);
+
+    int x = 120 - totalW / 2;
+    if (x < 4) x = 4;
+
+    int wx = x;
+    for (int i = 0; i < nWords; i++) {
+        int wIdx = wOffset + i;
+        uint16_t col = (wIdx == highlightWord) ? COLOR_ACCENT
+                      : (wIdx <  highlightWord) ? COLOR_WORD_PAST
+                                                : COLOR_TEXT_HI;
+        tft.setTextColor(col);
+        tft.drawString(words[i], wx, y);
+        wx += wW[i] + spaceW;
     }
 }
 

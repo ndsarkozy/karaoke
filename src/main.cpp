@@ -10,8 +10,14 @@
 static volatile long          progressAnchor = 0;
 static volatile long          durationAnchor = 0;
 static volatile unsigned long milliAnchor    = 0;
+static volatile unsigned long lastProgressAt = 0;   // millis() of last progress notify
 static volatile bool          isPlaying      = false;
 static volatile bool          newTrackFlag   = false;
+
+// Phone may delay sending the pause notification by several seconds. If we think
+// we're playing but no progress notify has arrived recently, treat as paused so
+// lyrics stop advancing within ~1s of the real pause.
+#define PAUSE_INFER_MS 800
 
 static int           lastLine            = -1;
 static int           lastHighlightWord   = -1;
@@ -69,8 +75,12 @@ void loop() {
         progressAnchor = ble_getProgressMs() + 250;
         durationAnchor = ble_getDurationMs();
         milliAnchor    = millis();
+        lastProgressAt = millis();
         isPlaying      = ble_getIsPlaying();
     }
+
+    bool effectivelyPlaying = isPlaying &&
+        (millis() - lastProgressAt) < PAUSE_INFER_MS;
 
     if (newTrackFlag) {
         lastLine          = -1;
@@ -93,7 +103,7 @@ void loop() {
     // ── Lyric sync ────────────────────────────────────────────────────────────
     if (lyricCount == 0) { delay(50); return; }
 
-    long estimated = isPlaying
+    long estimated = effectivelyPlaying
         ? progressAnchor + (long)(millis() - milliAnchor)
         : progressAnchor;
 
@@ -116,13 +126,20 @@ void loop() {
     }
 
     bool lineChanged = (currentLine  != lastLine);
+
+    // Lock highlight monotonic per line: BLE notify jitter can briefly pull
+    // `estimated` backward, which would make the active word flicker back.
+    if (!lineChanged && lastHighlightWord >= 0 && highlightWord < lastHighlightWord) {
+        highlightWord = lastHighlightWord;
+    }
+
     bool wordChanged = (highlightWord != lastHighlightWord);
 
     if (lineChanged) lastLine = currentLine;
     if (lineChanged || wordChanged) {
         lastHighlightWord = highlightWord;
         String nextText = (lineIndices[1] >= 0) ? lyrics[lineIndices[1]].text : "";
-        display_showLyrics(lyrics[currentLine].text, nextText, highlightWord, lineChanged);
+        display_showLyrics(lyrics[currentLine].text, nextText, highlightWord, true);
     }
 
     delay(20);
