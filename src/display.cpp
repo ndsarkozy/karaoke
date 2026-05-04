@@ -7,10 +7,6 @@
 static TFT_eSPI tft = TFT_eSPI();
 
 // ─── Cached state ────────────────────────────────────────────────────────────
-static int   s_lastArcAngle  = -1;
-static long  s_lastProgress  = 0;
-static long  s_lastDuration  = 0;
-
 static String s_title  = "";
 static String s_artist = "";
 
@@ -30,10 +26,7 @@ static String s_artist = "";
 // the full-color album with no visible black rectangles.
 #define ALBUM_CACHE_Y      86
 #define ALBUM_CACHE_H      72
-#define ALBUM_LOWER_Y     158
-#define ALBUM_LOWER_H      42
 static uint16_t  s_albumCache[240 * ALBUM_CACHE_H];   // 240 × 72 × 2 = 34 560 B BSS
-static uint16_t* s_albumCacheLower = nullptr;          // 240 × 42 × 2 = 20 160 B heap
 static bool      s_albumCacheValid = false;
 static bool      s_capturingAlbum  = false;
 
@@ -59,18 +52,6 @@ static bool jpegOutput(int16_t x, int16_t y, uint16_t w, uint16_t h, uint16_t* b
                    bm + srcRow * w + (x1 - x),
                    (x2 - x1) * sizeof(uint16_t));
         }
-        // Lower strip (next-line italic zone) into heap cache, if reserved.
-        if (s_albumCacheLower) {
-            int16_t ly1 = max(y1, (int16_t)ALBUM_LOWER_Y);
-            int16_t ly2 = min(y2, (int16_t)(ALBUM_LOWER_Y + ALBUM_LOWER_H));
-            for (int row = ly1; row < ly2; row++) {
-                int srcRow = row - y;
-                int dstRow = row - ALBUM_LOWER_Y;
-                memcpy(&s_albumCacheLower[dstRow * 240 + x1],
-                       bm + srcRow * w + (x1 - x),
-                       (x2 - x1) * sizeof(uint16_t));
-            }
-        }
     }
     return true;
 }
@@ -90,7 +71,7 @@ void display_init() {
 }
 
 void display_fill(uint16_t c)   { tft.fillScreen(c); }
-void display_clear()            { tft.fillScreen(COLOR_BLACK); s_albumCacheValid = false; s_lastArcAngle = -1; }
+void display_clear()            { tft.fillScreen(COLOR_BLACK); s_albumCacheValid = false; }
 void display_drawCircle(int x, int y, int r, uint16_t c) { tft.drawCircle(x,y,r,c); }
 void display_fillCircle(int x, int y, int r, uint16_t c) { tft.fillCircle(x,y,r,c); }
 void display_brightness(uint8_t v) { analogWrite(TFT_BL, v); }
@@ -169,7 +150,6 @@ bool display_drawAlbum(const uint8_t* buf, size_t len) {
         return false;
     }
     s_albumCacheValid = true;
-    s_lastArcAngle    = -1;
     return true;
 }
 
@@ -204,32 +184,9 @@ static void drawTrackedCentered(const String &s, int cx, int y, uint16_t col, in
     }
 }
 
-// ─── Track info: artist (uppercase tracked) + bold title ─────────────────────
-static void renderTrackInfo() {
-    if (s_title.length() == 0 && s_artist.length() == 0) return;
-
-    // Artist — UPPERCASE small-caps with letter tracking
-    tft.setFreeFont(&FreeSans9pt7b);
-    String artistUp = s_artist;
-    artistUp.toUpperCase();
-    artistUp = fitText(artistUp, 200);
-    drawTrackedCentered(artistUp, 120, 28, COLOR_TEXT_FAINT, 2);
-
-    // Title — bold white, prominent
-    tft.setFreeFont(&FreeSansBold12pt7b);
-    tft.setTextDatum(TC_DATUM);
-    tft.setTextColor(COLOR_TEXT_HI);   // transparent bg
-    String t = fitText(s_title, 210);
-    tft.drawString(t, 120, 48);
-
-    tft.setFreeFont(NULL);
-    tft.setTextDatum(TL_DATUM);
-}
-
 void display_showTrackInfo(const String &title, const String &artist) {
     s_title  = title;
     s_artist = artist;
-    renderTrackInfo();
 }
 
 // ─── Lyric helpers ───────────────────────────────────────────────────────────
@@ -288,8 +245,6 @@ static void renderWords(const String &seg, int y,
     }
 }
 
-static void renderArcCached();
-
 // ─── Lyric stage (no pills — text floats on dimmed art) ──────────────────────
 void display_showLyrics(const String &currentLine, const String &nextLine,
                         int highlightWord, bool clearBg) {
@@ -302,11 +257,6 @@ void display_showLyrics(const String &currentLine, const String &nextLine,
         } else {
             tft.fillRect(0, ALBUM_CACHE_Y, 240, ALBUM_CACHE_H, COLOR_BLACK);
         }
-        // Cache stops at y = ALBUM_CACHE_Y + ALBUM_CACHE_H (= 158). The
-        // next-line italic sits below at y≈178, so wipe that strip to black
-        // to clear the previous frame's text.
-        tft.fillRect(0, ALBUM_CACHE_Y + ALBUM_CACHE_H, 240,
-                     200 - (ALBUM_CACHE_Y + ALBUM_CACHE_H), COLOR_BLACK);
     }
 
     if (currentLine.length() == 0) {
@@ -363,48 +313,6 @@ void display_showLyrics(const String &currentLine, const String &nextLine,
 
     for (int i = 0; i < nLines; i++)
         renderWords(parts[i], startY + i * lineH, highlightWord, wOff[i]);
-
-    // Next line — italic faint, transparent bg
-    if (nextLine.length() > 0) {
-        tft.setFreeFont(&FreeSansOblique9pt7b);
-        tft.setTextDatum(TC_DATUM);
-        String nl = fitText(nextLine, 200);
-        tft.setTextColor(COLOR_TEXT_FAINT);
-        tft.drawString(nl, 120, 178);
-        tft.setFreeFont(NULL);
-        tft.setTextDatum(TL_DATUM);
-    }
+    (void)nextLine;
 }
 
-// ─── Progress arc + accent dot at 12 o'clock ─────────────────────────────────
-//   Thin 3 px arc on the very edge, with a bright accent dot fixed at the top
-//   as the "now playing" cue (Car Thing styling).
-static void renderArcAt(int angle) {
-    uint32_t a = (uint32_t)angle;
-    if (a < 358)
-        tft.drawSmoothArc(120, 120, 119, 116, a, 360, 0x0841, 0x0000, false);
-    if (a >= 2)
-        tft.drawSmoothArc(120, 120, 119, 116, 0, a, COLOR_ACCENT, 0x0841, false);
-    // Accent dot at 12 o'clock
-    tft.fillCircle(120, 6, 3, COLOR_ACCENT);
-    tft.fillCircle(120, 6, 4, COLOR_ACCENT);   // glow ring
-    tft.fillCircle(120, 6, 2, COLOR_TEXT_HI);  // bright core
-}
-
-static void renderArcCached() {
-    if (s_lastDuration <= 0) return;
-    int angle = (int)(constrain((float)s_lastProgress / (float)s_lastDuration, 0.0f, 1.0f) * 360.0f);
-    renderArcAt(angle);
-    s_lastArcAngle = angle;
-}
-
-void display_drawProgressArc(long progressMs, long durationMs) {
-    s_lastProgress = progressMs;
-    s_lastDuration = durationMs;
-    if (durationMs <= 0) return;
-    int angle = (int)(constrain((float)progressMs / (float)durationMs, 0.0f, 1.0f) * 360.0f);
-    if (angle == s_lastArcAngle) return;
-    if (s_lastArcAngle >= 0 && abs(angle - s_lastArcAngle) < 2) return;
-    s_lastArcAngle = angle;
-    renderArcAt(angle);
-}

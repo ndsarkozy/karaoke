@@ -83,14 +83,6 @@ void loop() {
         }
     }
 
-    // ── Progress arc ──────────────────────────────────────────────────────────
-    if (durationAnchor > 0) {
-        long est = isPlaying
-            ? progressAnchor + (long)(millis() - milliAnchor)
-            : progressAnchor;
-        display_drawProgressArc(est, durationAnchor);
-    }
-
     // ── No-lyrics timeout: show indicator if album arrived but lyrics never came ─
     if (albumReceivedAt > 0 && millis() - albumReceivedAt > 5000) {
         albumReceivedAt = 0;

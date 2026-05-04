@@ -44,4 +44,3 @@ void display_showMessage(const String &line1, const String &line2, uint16_t colo
 bool display_drawAlbum(const uint8_t* buf, size_t len);
 void display_showTrackInfo(const String &title, const String &artist);
 void display_showLyrics(const String &currentLine, const String &nextLine, int highlightWord = 0, bool clearBg = true);
-void display_drawProgressArc(long progressMs, long durationMs);
