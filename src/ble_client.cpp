@@ -2,6 +2,7 @@
 #include <BLEDevice.h>
 #include <BLEClient.h>
 #include <BLEScan.h>
+#include <esp_gap_ble_api.h>
 
 #define SERVICE_UUID        "12345678-1234-1234-1234-123456789abc"
 #define PROGRESS_CHAR_UUID  "12345678-1234-1234-1234-123456789ab1"
@@ -180,7 +181,21 @@ static bool connectToServer() {
 
     if (!bleClient->connect(target)) { delete target; return false; }
     bleClient->setMTU(512);
-    delay(500);
+    // Ask the peripheral for the fastest viable connection interval (7.5–15 ms)
+    // so progress notifies and chunked transfers deliver in the next radio
+    // event instead of the default ~50 ms slot.
+    //   intervals in units of 1.25 ms; 6→7.5 ms, 12→15 ms
+    //   latency 0, supervision timeout 400 (units 10 ms = 4 s)
+    {
+        esp_ble_conn_update_params_t cp = {};
+        memcpy(cp.bda, target->getAddress().getNative(), 6);
+        cp.min_int       = 6;
+        cp.max_int       = 12;
+        cp.latency       = 0;
+        cp.timeout       = 400;
+        esp_ble_gap_update_conn_params(&cp);
+    }
+    delay(300);
 
     BLERemoteService* svc = bleClient->getService(SERVICE_UUID);
     if (!svc) { bleClient->disconnect(); delete target; return false; }
@@ -220,8 +235,8 @@ void ble_task(void*) {
     while (true) {
         if (!connected) {
             Serial.println("[BLE] Scanning...");
-            if (!connectToServer()) vTaskDelay(pdMS_TO_TICKS(3000));
+            if (!connectToServer()) vTaskDelay(pdMS_TO_TICKS(2000));
         }
-        vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }

@@ -250,8 +250,16 @@ static void renderWords(const String &seg, int y,
         uint16_t col = (wIdx == highlightWord) ? COLOR_ACCENT
                       : (wIdx <  highlightWord) ? COLOR_WORD_PAST
                                                 : COLOR_TEXT_HI;
+        // 4-direction black halo so text reads on any album colour. Halo
+        // first, fill last; the four offsets give roughly the same
+        // legibility as a full 8-direction halo at half the cost.
+        tft.setTextColor(COLOR_BLACK);
+        tft.drawString(words[i], wx - 1, y);
+        tft.drawString(words[i], wx + 1, y);
+        tft.drawString(words[i], wx,     y - 1);
+        tft.drawString(words[i], wx,     y + 1);
         tft.setTextColor(col);
-        tft.drawString(words[i], wx, y);
+        tft.drawString(words[i], wx,     y);
         wx += wW[i] + spaceW;
     }
 }
