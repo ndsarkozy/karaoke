@@ -184,7 +184,7 @@ static void drawTrackedCentered(const String &s, int cx, int y, uint16_t col, in
     }
 }
 
-void display_showTrackInfo(const String &title, const String &artist) {
+void display_showTrackInfo(const char* title, const char* artist) {
     s_title  = title;
     s_artist = artist;
 }

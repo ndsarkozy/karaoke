@@ -5,24 +5,18 @@ LyricLine lyrics[MAX_LYRIC_LINES];
 int       lyricCount          = 0;
 long      wordStartMs[MAX_WORD_ENTRIES];
 int       wordTimestampCount  = 0;
-String    trackTitle          = "";
-String    trackArtist         = "";
+char      trackTitle[64]      = {};
+char      trackArtist[64]     = {};
 
 void lyrics_clear() {
     lyricCount         = 0;
     wordTimestampCount = 0;
-    for (int i = 0; i < MAX_LYRIC_LINES; i++) {
-        lyrics[i].timestampMs = 0;
-        lyrics[i].text        = "";
-        lyrics[i].wordOffset  = -1;
-        lyrics[i].wordCount   = 0;
-    }
 }
 
 void lyrics_parse_ble(const char* raw) {
     lyrics_clear();
-    trackTitle  = "";
-    trackArtist = "";
+    trackTitle[0]  = '\0';
+    trackArtist[0] = '\0';
     if (!raw || !*raw) {
         Serial.println("[Lyrics] Parsed 0 lines — empty payload");
         return;
@@ -33,17 +27,18 @@ void lyrics_parse_ble(const char* raw) {
         const char* nl = strchr(p, '\n');
         int lineLen = nl ? (int)(nl - p) : (int)strlen(p);
 
-        // strip trailing \r
         int end = lineLen;
         while (end > 0 && (p[end-1] == '\r' || p[end-1] == ' ')) end--;
 
         if (end >= 6 && strncmp(p, "TRACK:", 6) == 0) {
             const char* pipe = (const char*)memchr(p + 6, '|', end - 6);
             if (pipe) {
-                trackTitle  = String(p + 6, (int)(pipe - p - 6));
-                trackArtist = String(pipe + 1, (int)(p + end - pipe - 1));
-                trackTitle.trim();
-                trackArtist.trim();
+                int titleLen  = (int)(pipe - p - 6);
+                int artistLen = (int)(p + end - pipe - 1);
+                titleLen  = min(titleLen,  (int)sizeof(trackTitle)  - 1);
+                artistLen = min(artistLen, (int)sizeof(trackArtist) - 1);
+                memcpy(trackTitle,  p + 6,    titleLen);  trackTitle[titleLen]   = '\0';
+                memcpy(trackArtist, pipe + 1, artistLen); trackArtist[artistLen] = '\0';
             }
         } else {
             const char* pipe = (const char*)memchr(p, '|', end);
@@ -59,9 +54,11 @@ void lyrics_parse_ble(const char* raw) {
 
                 if (textLen > 0) {
                     lyrics[lyricCount].timestampMs = ms;
-                    lyrics[lyricCount].text        = String(textStart, textLen);
-                    lyrics[lyricCount].wordOffset  = -1;
-                    lyrics[lyricCount].wordCount   = 0;
+                    int copyLen = min(textLen, MAX_LINE_LEN);
+                    memcpy(lyrics[lyricCount].text, textStart, copyLen);
+                    lyrics[lyricCount].text[copyLen] = '\0';
+                    lyrics[lyricCount].wordOffset = -1;
+                    lyrics[lyricCount].wordCount  = 0;
                     lyricCount++;
                 }
             }
@@ -69,7 +66,7 @@ void lyrics_parse_ble(const char* raw) {
         p = nl ? nl + 1 : p + lineLen;
     }
     Serial.printf("[Lyrics] Parsed %d lines — %s / %s\n",
-                  lyricCount, trackTitle.c_str(), trackArtist.c_str());
+                  lyricCount, trackTitle, trackArtist);
 }
 
 void lyrics_printAll() {

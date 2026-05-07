@@ -2,14 +2,13 @@
 #include <BLEDevice.h>
 #include <BLEClient.h>
 #include <BLEScan.h>
-#include <esp_gap_ble_api.h>
 
 #define SERVICE_UUID        "12345678-1234-1234-1234-123456789abc"
 #define PROGRESS_CHAR_UUID  "12345678-1234-1234-1234-123456789ab1"
 #define LYRICS_CHAR_UUID    "12345678-1234-1234-1234-123456789ab2"
 #define ALBUM_CHAR_UUID     "12345678-1234-1234-1234-123456789ab3"
 
-#define ALBUM_BUF_SIZE 26000
+#define ALBUM_BUF_SIZE 20000
 
 static BLEClient*               bleClient    = nullptr;
 static BLERemoteCharacteristic* progressChar = nullptr;
@@ -17,16 +16,16 @@ static BLERemoteCharacteristic* lyricsChar   = nullptr;
 static BLERemoteCharacteristic* albumChar    = nullptr;
 
 static volatile bool connected   = false;
-static bool newLyrics            = false;
-static bool newProgress          = false;
-static bool newAlbum             = false;
+static volatile bool newLyrics   = false;
+static volatile bool newProgress = false;
+static volatile bool newAlbum    = false;
 
 static long   progressMs         = 0;
 static long   durationMs         = 0;
 static bool   isPlaying          = false;
 
 // Lyric chunk reassembly — static buffer avoids heap fragmentation
-#define LYRIC_BUF_SIZE 10240
+#define LYRIC_BUF_SIZE 8192
 static char   lyricChunkBuf[LYRIC_BUF_SIZE];
 static size_t lyricAssembled  = 0;
 static int    lastChunkIndex  = -1;
@@ -78,17 +77,16 @@ static void onLyricsNotify(BLERemoteCharacteristic*, uint8_t* data, size_t len, 
     char hbuf[21];
     memcpy(hbuf, data, colonPos);
     hbuf[colonPos] = '\0';
-    String header = String(hbuf);
 
     int    payloadStart = colonPos + 1;
     size_t payloadLen   = (payloadStart < (int)len) ? len - payloadStart : 0;
 
-    int slashPos = header.indexOf('/');
-    if (slashPos < 0) return;
-    int chunkIdx = header.substring(0, slashPos).toInt();
-    int total    = header.substring(slashPos+1).toInt();
-
-    Serial.printf("[BLE] Lyric chunk %d/%d\n", chunkIdx, total);
+    // Avoid heap allocation inside BLE callback — use C string ops directly.
+    char* slash = strchr(hbuf, '/');
+    if (!slash) return;
+    *slash = '\0';
+    int chunkIdx = atoi(hbuf);
+    int total    = atoi(slash + 1);
 
     if (chunkIdx == 0) {
         lyricAssembled = 0;
@@ -106,8 +104,7 @@ static void onLyricsNotify(BLERemoteCharacteristic*, uint8_t* data, size_t len, 
 
     if (chunkIdx == total - 1) {
         lyricChunkBuf[lyricAssembled] = '\0';
-        newLyrics = true;   // main loop reads lyricChunkBuf via ble_getLyrics()
-        Serial.printf("[BLE] Lyrics assembled: %d bytes\n", (int)lyricAssembled);
+        newLyrics = true;
     }
 }
 
@@ -120,16 +117,15 @@ static void onAlbumNotify(BLERemoteCharacteristic*, uint8_t* data, size_t len, b
     char hbuf[21];
     memcpy(hbuf, data, colonPos);
     hbuf[colonPos] = '\0';
-    String header   = String(hbuf);
     int    payloadStart = colonPos + 1;
     size_t payloadLen   = len - payloadStart;
 
-    int slashPos = header.indexOf('/');
-    if (slashPos < 0) return;
-    int chunkIdx = header.substring(0, slashPos).toInt();
-    int total    = header.substring(slashPos+1).toInt();
-
-    Serial.printf("[BLE] Album chunk %d/%d (%d bytes)\n", chunkIdx, total, (int)payloadLen);
+    // Avoid heap allocation inside BLE callback — use C string ops directly.
+    char* slash = strchr(hbuf, '/');
+    if (!slash) return;
+    *slash = '\0';
+    int chunkIdx = atoi(hbuf);
+    int total    = atoi(slash + 1);
 
     // Drop any new transfer while the main task is decoding the current one.
     // Sender will retry on the next track-change. Without this, the JPEG
@@ -156,7 +152,6 @@ static void onAlbumNotify(BLERemoteCharacteristic*, uint8_t* data, size_t len, b
     if (chunkIdx == total-1) {
         albumLen = albumAssembled;
         newAlbum = true;
-        Serial.printf("[BLE] Album assembled: %d bytes\n", (int)albumLen);
     }
 }
 
@@ -181,21 +176,7 @@ static bool connectToServer() {
 
     if (!bleClient->connect(target)) { delete target; return false; }
     bleClient->setMTU(512);
-    // Ask the peripheral for the fastest viable connection interval (7.5–15 ms)
-    // so progress notifies and chunked transfers deliver in the next radio
-    // event instead of the default ~50 ms slot.
-    //   intervals in units of 1.25 ms; 6→7.5 ms, 12→15 ms
-    //   latency 0, supervision timeout 400 (units 10 ms = 4 s)
-    {
-        esp_ble_conn_update_params_t cp = {};
-        memcpy(cp.bda, target->getAddress().getNative(), 6);
-        cp.min_int       = 6;
-        cp.max_int       = 12;
-        cp.latency       = 0;
-        cp.timeout       = 400;
-        esp_ble_gap_update_conn_params(&cp);
-    }
-    delay(300);
+    delay(500);  // let GATT service discovery complete before accessing services
 
     BLERemoteService* svc = bleClient->getService(SERVICE_UUID);
     if (!svc) { bleClient->disconnect(); delete target; return false; }

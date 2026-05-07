@@ -42,5 +42,5 @@ void display_showMessage(const String &line1, const String &line2, uint16_t colo
 
 // New design API
 bool display_drawAlbum(const uint8_t* buf, size_t len);
-void display_showTrackInfo(const String &title, const String &artist);
+void display_showTrackInfo(const char* title, const char* artist);
 void display_showLyrics(const String &currentLine, const String &nextLine, int highlightWord = 0, bool clearBg = true);

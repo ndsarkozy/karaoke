@@ -152,7 +152,7 @@ void loop() {
         // words consume proportionally more of the line's duration. This
         // tracks natural singing far better than dividing time evenly —
         // a 1-letter "I" no longer eats the same slot as "burning".
-        const String &text = lyrics[currentLine].text;
+        const char* text = lyrics[currentLine].text;
         long lineStart = lyrics[currentLine].timestampMs;
         long lineEnd   = (currentLine + 1 < lyricCount)
             ? lyrics[currentLine+1].timestampMs : lineStart + 4000;
@@ -161,14 +161,14 @@ void loop() {
         long duration = max(lineEnd - lineStart, 1L);
 
         int totalChars = 0;
-        for (int i = 0; i < (int)text.length(); i++)
+        for (int i = 0; i < (int)strlen(text); i++)
             if (text[i] != ' ') totalChars++;
         if (totalChars == 0) totalChars = 1;
 
         long target = (long)((float)elapsed / duration * totalChars);
         int  acc = 0, wc = 0, cur = 0;
         bool inWord = false;
-        for (int i = 0; i < (int)text.length(); i++) {
+        for (int i = 0; i < (int)strlen(text); i++) {
             if (text[i] == ' ') { inWord = false; continue; }
             if (!inWord) { inWord = true; wc++; }
             acc++;
@@ -190,7 +190,7 @@ void loop() {
     if (lineChanged) lastLine = currentLine;
     if (lineChanged || wordChanged) {
         lastHighlightWord = highlightWord;
-        String nextText = (lineIndices[1] >= 0) ? lyrics[lineIndices[1]].text : "";
+        const char* nextText = (lineIndices[1] >= 0) ? lyrics[lineIndices[1]].text : "";
         display_showLyrics(lyrics[currentLine].text, nextText, highlightWord, true);
     }
 
