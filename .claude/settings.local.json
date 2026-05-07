@@ -10,7 +10,10 @@
       "PowerShell(Get-Command *)",
       "WebSearch",
       "WebFetch(domain:elm-chan.org)",
-      "PowerShell(pip install *)"
+      "PowerShell(pip install *)",
+      "Bash(Get-ChildItem -Path \"C:\\\\Users\\\\ndsar\\\\AndroidStudioProjects\\\\KaraokeCompanion\" -Recurse -ErrorAction SilentlyContinue)",
+      "Bash(Select-Object -First 30)",
+      "Bash(Format-Table FullName)"
     ]
   }
 }
