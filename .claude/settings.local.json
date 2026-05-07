@@ -9,7 +9,8 @@
       "Bash(where.exe magick *)",
       "PowerShell(Get-Command *)",
       "WebSearch",
-      "WebFetch(domain:elm-chan.org)"
+      "WebFetch(domain:elm-chan.org)",
+      "PowerShell(pip install *)"
     ]
   }
 }
